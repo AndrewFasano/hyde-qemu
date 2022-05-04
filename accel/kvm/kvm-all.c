@@ -283,6 +283,29 @@ int kvm_physical_memory_addr_from_host(KVMState *s, void *ram,
     return ret;
 }
 
+int kvm_host_addr_from_physical_physical_memory(KVMState *s, hwaddr gpa, hwaddr *phys_addr);
+
+int kvm_host_addr_from_physical_physical_memory(KVMState *s, hwaddr gpa,
+                                       hwaddr *phys_addr)
+{
+    KVMMemoryListener *kml = &s->memory_listener;
+    int i, ret = 0;
+
+    kvm_slots_lock();
+    for (i = 0; i < s->nr_slots; i++) {
+        KVMSlot *mem = &kml->slots[i];
+
+        if (gpa >= mem->start_addr && gpa < mem->start_addr + mem->memory_size) {
+            *phys_addr = (hwaddr)mem->ram + (gpa - mem->start_addr);
+            ret = 1;
+            break;
+        }
+    }
+    kvm_slots_unlock();
+
+    return ret;
+}
+
 static int kvm_set_user_memory_region(KVMMemoryListener *kml, KVMSlot *slot, bool new)
 {
     KVMState *s = kvm_state;
@@ -2192,7 +2215,6 @@ void kvm_irqchip_set_qemuirq_gsi(KVMState *s, qemu_irq irq, int gsi)
 static void kvm_irqchip_create(KVMState *s)
 {
     int ret;
-
     assert(s->kernel_irqchip_split != ON_OFF_AUTO_AUTO);
     if (kvm_check_extension(s, KVM_CAP_IRQCHIP)) {
         ;
@@ -2808,6 +2830,57 @@ static void kvm_eat_signals(CPUState *cpu)
     } while (sigismember(&chkset, SIG_IPI));
 }
 
+//RDI, RDX, R10, R8, R9
+#define ARG0(s) s.rdi
+#define ARG1(s) s.rdx
+#define ARG2(s) s.r10
+#define ARG3(s) s.r8
+#define ARG4(s) s.r9
+
+inline void on_syscall(CPUState *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc) {
+  //printf("Syscall %lu in asid %lx at %lx\n", callno, asid, pc);
+  // Ioctls of note: KVM_{GET,SET}_REGS for getting/setting all registers
+  // We can use the KVM_TRANSLATE and KVM_SET_USER_MEMORY_REGION to translate a gva and then modify it
+
+  if (unlikely(callno == 59)) {
+      struct kvm_regs regs;
+      int rv = kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &regs);
+      if (rv != 0) {
+        printf("HyDE error reading registers: %d\n", rv);
+        return;
+      }
+      __u64 fname_ptr = ARG0(regs);
+
+      // Translate
+      struct kvm_translation t;
+      t.linear_address = fname_ptr;
+      rv = kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &t);
+      if (rv != 0) {
+        printf("HyDE error reading translating: %d\n", rv);
+        return;
+      }
+
+      // Translate guest physical address to a host address so we can read/write it
+      KVMState *s = KVM_STATE(current_accel());
+      hwaddr phys_addr;
+      if (!kvm_host_addr_from_physical_physical_memory(s, t.physical_address, &phys_addr)) {
+        printf("HyDE unable to find host address for guest memory (GVA %llx -> GPA %llx -> HVA %lx => fail)\n", fname_ptr, t.physical_address, phys_addr);
+      }
+      //printf("GVA %llx -> GPA %llx -> HVA %lx => %s\n", fname_ptr, t.physical_address, phys_addr, (char*)phys_addr);
+      char* fname = (char*)phys_addr;
+      printf("SYS_exec(%s)\n", fname);
+
+      //if (strcmp(fname, "/bin/true") == 0) {
+      //  printf("\tFLIP\n");
+      //  memcpy(fname, "/bin/bash", 10);
+      //}
+  }
+}
+
+inline void on_sysret(CPUState *cpu, long unsigned int retval, long unsigned int asid, long unsigned int pc) {
+  //printf("Syscall returns %lx in asid %lx at %lx\n",  retval, asid, pc);
+}
+
 int kvm_cpu_exec(CPUState *cpu)
 {
     struct kvm_run *run = cpu->kvm_run;
@@ -2883,7 +2956,30 @@ int kvm_cpu_exec(CPUState *cpu)
         }
 
         trace_kvm_run_exit(cpu->cpu_index, run->exit_reason);
+
         switch (run->exit_reason) {
+
+        case KVM_EXIT_TPR_ACCESS:
+          {
+            bool is_syscall = run->papr_hcall.args[2] == 1;
+            if (is_syscall) {
+              on_syscall(cpu, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0]);
+            }else{
+              // Sysret
+              on_sysret(cpu, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0]);
+              
+            }
+            //struct kvm_regs regs;
+            //int r = kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &regs);
+            //if (r == 0) {
+            //  printf("HyDE vm exit at pc %llx, run->mmio.phys_addr is %llx!\n", regs.rcx, run->mmio.phys_addr);
+            //} else {
+            //  printf("HyDE vm exit but error getting regs: %d\n", -errno);
+            //}
+          }
+          ret = 0;
+          break;
+
         case KVM_EXIT_IO:
             DPRINTF("handle_io\n");
             /* Called outside BQL */

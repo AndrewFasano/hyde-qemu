@@ -2831,17 +2831,30 @@ static void kvm_eat_signals(CPUState *cpu)
 }
 
 //RDI, RDX, R10, R8, R9
+#define CALLNO(s) s.rax
 #define ARG0(s) s.rdi
 #define ARG1(s) s.rdx
 #define ARG2(s) s.r10
 #define ARG3(s) s.r8
 #define ARG4(s) s.r9
 
+#define set_CALLNO(s, x) s.rax =x
+#define set_ARG0(s, x) s.rdi =x
+#define set_ARG1(s, x) s.rdx =x
+#define set_ARG2(s, x) s.r10 =x
+#define set_ARG3(s, x) s.r8  =x
+#define set_ARG4(s, x) s.r9  =x
+
+long unsigned int last_exec_asid = 0;
+long unsigned int just_coopted = 0;
+struct kvm_regs coopted_regs = {0};
+
 inline void on_syscall(CPUState *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc) {
   //printf("Syscall %lu in asid %lx at %lx\n", callno, asid, pc);
   // Ioctls of note: KVM_{GET,SET}_REGS for getting/setting all registers
   // We can use the KVM_TRANSLATE and KVM_SET_USER_MEMORY_REGION to translate a gva and then modify it
 
+#if 0 // exec logger + replacer
   if (unlikely(callno == 59)) {
       struct kvm_regs regs;
       int rv = kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &regs);
@@ -2875,10 +2888,45 @@ inline void on_syscall(CPUState *cpu, long unsigned int callno, long unsigned in
       //  memcpy(fname, "/bin/bash", 10);
       //}
   }
+#endif
+  // When we see a SYS_READ, we'll coopt it with a GETUID then let it run for real
+  if (unlikely(callno == 0)) {
+    struct kvm_regs regs;
+    int rv = kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &regs);
+    if (rv != 0) {
+      printf("HyDE error reading registers: %d\n", rv);
+      return;
+    }
+
+    if (last_exec_asid == 0 && asid != just_coopted) {
+      printf("SYS_read in %lx of %llx\n", asid, ARG0(regs));
+      last_exec_asid = asid;
+      memcpy(&coopted_regs, &regs, sizeof(regs));
+
+      // Change callno to GETUID
+      set_CALLNO(regs, 102);
+
+      rv = kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &regs);
+      if (rv != 0) {
+        printf("HyDE error updating registers: %d\n", rv);
+        return;
+      }
+    }
+  }
 }
 
 inline void on_sysret(CPUState *cpu, long unsigned int retval, long unsigned int asid, long unsigned int pc) {
-  //printf("Syscall returns %lx in asid %lx at %lx\n",  retval, asid, pc);
+  if (asid == last_exec_asid) {
+    printf("Co-opted read->GETUID in %lx returned at %lx with value %d\n", asid, pc, (int)retval);
+    coopted_regs.rip = pc-2; // Take it back now, y'all
+    int rv = kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &coopted_regs);
+    last_exec_asid = 0;
+    just_coopted = asid;
+    if (rv != 0) {
+      printf("HyDE error updating registers: %d\n", rv);
+      return;
+    }
+  }
 }
 
 int kvm_cpu_exec(CPUState *cpu)

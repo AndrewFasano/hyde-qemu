@@ -22,7 +22,8 @@ bool kvm_supports_guest_debug(void);
 int kvm_insert_breakpoint(CPUState *cpu, int type, hwaddr addr, hwaddr len);
 int kvm_remove_breakpoint(CPUState *cpu, int type, hwaddr addr, hwaddr len);
 void kvm_remove_all_breakpoints(CPUState *cpu);
-void on_syscall(CPUState*, long unsigned int, long unsigned int, long unsigned int);
-void on_sysret(CPUState*, long unsigned int, long unsigned int, long unsigned int);
+// Provided by hyde.cpp
+extern void on_syscall(void*, long unsigned int, long unsigned int, long unsigned int);
+extern void on_sysret(void*, long unsigned int, long unsigned int, long unsigned int);
 
 #endif /* KVM_CPUS_H */

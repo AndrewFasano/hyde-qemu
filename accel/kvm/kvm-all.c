@@ -412,6 +412,8 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
     long mmap_size;
     int ret;
 
+    hyde_init();
+
     trace_kvm_init_vcpu(cpu->cpu_index, kvm_arch_vcpu_id(cpu));
 
     ret = kvm_get_vcpu(s, kvm_arch_vcpu_id(cpu));

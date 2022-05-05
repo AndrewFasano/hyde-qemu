@@ -34,13 +34,13 @@ typedef struct {
 } syscall;
  
 // Co-routine classes based off https://www.scs.stanford.edu/~dm/blog/c++-coroutines.html
-struct SyscCoRoutine {
+struct SyscCoroutine {
   struct promise_type {
     syscall value_;
 
     ~promise_type() { }
 
-    SyscCoRoutine get_return_object() {
+    SyscCoroutine get_return_object() {
       return {
         .h_ = std::coroutine_handle<promise_type>::from_promise(*this)
       };
@@ -59,7 +59,7 @@ struct SyscCoRoutine {
   std::coroutine_handle<promise_type> h_;
 };
 
-typedef std::coroutine_handle<SyscCoRoutine::promise_type> coopter_t;
+typedef std::coroutine_handle<SyscCoroutine::promise_type> coopter_t;
 
 typedef struct {
   coopter_t coopter;
@@ -67,7 +67,12 @@ typedef struct {
   void* cpu;
   long unsigned int retval;
   unsigned int counter;
+  bool skip;
 } asid_details;
+
+typedef std::pair<bool(*)(void*, long unsigned int), SyscCoroutine(*)(asid_details*)> coopter_pair;
+std::vector<coopter_pair> coopters;
+std::map<long unsigned int, asid_details*> active_details;
 
 // Gross set of build_syscall functions without vaargs
 void _build_syscall(syscall* s, unsigned int callno, int nargs,

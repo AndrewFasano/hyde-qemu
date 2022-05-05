@@ -9,48 +9,34 @@
 #include "qemu/compiler.h"
 #include <map>
 #include <cassert>
+#include <asm/unistd.h> // Syscall numbers
 #include "hyde.h"
 
 
 SyscCoRoutine my_osi_injector(asid_details* r) {
   // Before we inject anything, let's look at the current name
 
-  // 1) Get guest registers
+  // Get guest registers
   struct kvm_regs regs;
-  assert(kvm_vcpu_ioctl(r->cpu, KVM_GET_REGS, &regs) == 0);
+  GETREGS(r, regs);
 
+  // Read arg0 from guest memory
   syscall sc;
+  __u64 fname = memread(r, ARG0(regs), &sc);
 
-  // 2) Read arg0 from guest memory
-  __u64 fname_ptr = ARG0(regs);
-  struct kvm_translation trans;
-  trans.linear_address = fname_ptr;
-  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
-
-  // Couldn't translate - yield a syscall to page it in and then retry
-  if (trans.physical_address == (unsigned long)-1) {
-    build_syscall(&sc, 21, fname_ptr, 0);
+  if (fname == (__u64)-1) {
     co_yield sc;
-
-    assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
-    if (trans.physical_address == (unsigned long)-1) {
-      printf("[HYDE ERROR] Unable to translate GVA %llx got GPA %llx even after injected access\n", fname_ptr, trans.physical_address);
-      co_return;
-    }
+    fname = memread(r, ARG0(regs), nullptr);
   }
 
-  __u64 phys_addr;
-  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &phys_addr) == 1);
-  char* fname = (char*)phys_addr;
-  printf("SYS_exec(%s)\n", fname);
-
-  build_syscall(&sc, 102); // getuid
+  printf("SYS_exec(%s)\n", (char*)fname);
+  build_syscall(&sc, __NR_getuid);
   co_yield sc;
 
   if (r->retval != 0) {
     auto uid = r->retval;
 
-    build_syscall(&sc, 39); // getpid
+    build_syscall(&sc, __NR_getpid);
     co_yield sc;
     printf("HyDE:  myinj]: Non-root process! UID is %ld PID is %ld\n", uid, r->retval);
   }
@@ -63,9 +49,15 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   asid_details *a;
   coopter_t h;
 
+
+  if (callno == 15 || callno == __NR_rt_sigreturn) { // 15 is sigreturn
+    // We should never interfere with these, even if we're co-opting a process
+    return;
+  }
+
   if (!active_details.contains(asid)) {
     // No co-opter for the current asid - should we start one? Let's say yes if it's an execve, no otherwise
-    if (callno == 59) {
+    if (callno == __NR_execve) {
       a = new asid_details;
       a->counter = 0;
       a->cpu = cpu;
@@ -85,17 +77,13 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
 
   auto &promise = h.promise();
 	if (!h.done()) {
-		//printf("[HYDE] Co-opter in %lx injects %d-th syscall: #%d\n", asid, a->counter++, promise.value_.callno);
-    auto sysc = promise.value_;
-    a->last_inject = sysc.callno;
-
-    // First store original registers
     struct kvm_regs r;
+    auto sysc = promise.value_;
+    // First store original registers into asid_details
     assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
-
     memcpy(&a->orig_regs, &r, sizeof(r));
 
-    // Then update state to inject desired syscall and args (in promise.value_.callno/args)
+    // Then update state to inject desired syscall and args
     set_CALLNO(r, sysc.callno);
     if (sysc.nargs > 0) 
       set_ARG0(r, sysc.args[0]);
@@ -109,9 +97,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
       set_ARG4(r, sysc.args[4]);
     if (sysc.nargs > 5) 
       set_ARG4(r, sysc.args[5]);
-
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &r) == 0);
-
 	} else {
 		h.destroy();
 		active_details.erase(asid);

@@ -283,11 +283,11 @@ int kvm_physical_memory_addr_from_host(KVMState *s, void *ram,
     return ret;
 }
 
-int kvm_host_addr_from_physical_physical_memory(KVMState *s, hwaddr gpa, hwaddr *phys_addr);
+int kvm_host_addr_from_physical_physical_memory(hwaddr gpa, hwaddr *phys_addr);
 
-int kvm_host_addr_from_physical_physical_memory(KVMState *s, hwaddr gpa,
-                                       hwaddr *phys_addr)
+int kvm_host_addr_from_physical_physical_memory(hwaddr gpa, hwaddr *phys_addr)
 {
+    KVMState *s = KVM_STATE(current_accel());
     KVMMemoryListener *kml = &s->memory_listener;
     int i, ret = 0;
 

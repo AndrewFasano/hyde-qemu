@@ -12,6 +12,11 @@
 #include <vector>
 #include "qemu/compiler.h"
 #include "hyde.h"
+#include "hyde_helpers.h"
+
+std::vector<coopter_pair> coopters; // Pair of bool() which indicates if coopter should start and coopter
+std::map<long unsigned int, asid_details*> active_details; // asid->details
+
 
 extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc) {
   asid_details *a;

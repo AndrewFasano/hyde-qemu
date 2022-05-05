@@ -11,9 +11,49 @@
 #include <cassert>
 #include "hyde.h"
 
-SyscCoRoutine my_osi_injector(unsigned int start) {
-  co_yield 102; // getuid
-  co_yield 39; // getpid
+
+SyscCoRoutine my_osi_injector(asid_details* r) {
+  // Before we inject anything, let's look at the current name
+
+  // 1) Get guest registers
+  struct kvm_regs regs;
+  assert(kvm_vcpu_ioctl(r->cpu, KVM_GET_REGS, &regs) == 0);
+
+  syscall sc;
+
+  // 2) Read arg0 from guest memory
+  __u64 fname_ptr = ARG0(regs);
+  struct kvm_translation trans;
+  trans.linear_address = fname_ptr;
+  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+
+  // Couldn't translate - yield a syscall to page it in and then retry
+  if (trans.physical_address == (unsigned long)-1) {
+    build_syscall(&sc, 21, fname_ptr, 0);
+    co_yield sc;
+
+    assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+    if (trans.physical_address == (unsigned long)-1) {
+      printf("[HYDE ERROR] Unable to translate GVA %llx got GPA %llx even after injected access\n", fname_ptr, trans.physical_address);
+      co_return;
+    }
+  }
+
+  __u64 phys_addr;
+  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &phys_addr) == 1);
+  char* fname = (char*)phys_addr;
+  printf("SYS_exec(%s)\n", fname);
+
+  build_syscall(&sc, 102); // getuid
+  co_yield sc;
+
+  if (r->retval != 0) {
+    auto uid = r->retval;
+
+    build_syscall(&sc, 39); // getpid
+    co_yield sc;
+    printf("HyDE:  myinj]: Non-root process! UID is %ld PID is %ld\n", uid, r->retval);
+  }
 }
 
 std::map<long unsigned int, asid_details*> active_details;
@@ -26,35 +66,13 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   if (!active_details.contains(asid)) {
     // No co-opter for the current asid - should we start one? Let's say yes if it's an execve, no otherwise
     if (callno == 59) {
-      // First check what the argument is
-      struct kvm_regs r;
-      assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
+      a = new asid_details;
+      a->counter = 0;
+      a->cpu = cpu;
+      active_details[asid] = a;
 
-      __u64 fname_ptr = ARG0(r);
-      // Translate
-      struct kvm_translation t;
-      t.linear_address = fname_ptr;
-      assert(kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &t) == 0);
-
-      // Translate guest physical address to a host address so we can read/write it
-      __u64 phys_addr;
-      if (!kvm_host_addr_from_physical_physical_memory(t.physical_address, &phys_addr)) {
-        printf("HyDE unable to find host address for guest memory (GVA %llx -> GPA %llx -> HVA %llx => fail)\n", fname_ptr, t.physical_address, phys_addr);
-        // TODO: inject access to page it in?
-        return;
-      }
-      char* fname = (char*)phys_addr;
-      printf("SYS_exec(%s)\n", fname);
-
-      // Only co-opt if name matches - this is the first exece we see
-      if (strcmp(fname, "/proc/self/exe") == 0) {
-        h = my_osi_injector(callno).h_;
-        // Now save it into our map
-        a = new asid_details;
-        a->coopter = h;
-        a->counter = 0;
-        active_details[asid] = a;
-      }
+      h = my_osi_injector(active_details[asid]).h_;
+      a->coopter = h;
     }
   }
 
@@ -67,9 +85,9 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
 
   auto &promise = h.promise();
 	if (!h.done()) {
-		printf("[HYDE] Co-opter in %lx injects %d-th syscall: #%d\n", asid, a->counter++, promise.value_);
-    //h(); // XXX: be sure to advance generator so we don't duplicate injection -- XXX should this be in on return?
-    a->last_inject = promise.value_;
+		//printf("[HYDE] Co-opter in %lx injects %d-th syscall: #%d\n", asid, a->counter++, promise.value_.callno);
+    auto sysc = promise.value_;
+    a->last_inject = sysc.callno;
 
     // First store original registers
     struct kvm_regs r;
@@ -77,8 +95,21 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
 
     memcpy(&a->orig_regs, &r, sizeof(r));
 
-    // Then update state to inject desired syscall (in promise.value_)
-    set_CALLNO(r, promise.value_);
+    // Then update state to inject desired syscall and args (in promise.value_.callno/args)
+    set_CALLNO(r, sysc.callno);
+    if (sysc.nargs > 0) 
+      set_ARG0(r, sysc.args[0]);
+    if (sysc.nargs > 1) 
+      set_ARG1(r, sysc.args[1]);
+    if (sysc.nargs > 2) 
+      set_ARG2(r, sysc.args[2]);
+    if (sysc.nargs > 3) 
+      set_ARG3(r, sysc.args[3]);
+    if (sysc.nargs > 4) 
+      set_ARG4(r, sysc.args[4]);
+    if (sysc.nargs > 5) 
+      set_ARG4(r, sysc.args[5]);
+
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &r) == 0);
 
 	} else {
@@ -94,96 +125,11 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   // We co-opted this syscall - store it's retval and reset state!
   asid_details * a = active_details.at(asid);
 
-  // Store retval
+  // Store retval then and advance generator - note its return (the next syscall to inject) won't be
+  // consumed until the next syscall
   a->retval = retval;
-
-  if ((long int) retval < 0) {
-    printf("[HYDE] After running injected #%ld in %lx we got a negative retval of %ld (0x%lx)\n", a->last_inject, asid, (long int) retval, retval);
-  }else{
-    printf("[HYDE] After running injected #%ld in %lx we got a retval of 0x%lx\n", a->last_inject, asid, retval);
-  }
-
-  // Advance generator (so it's ready for next injection) TODO: get retval into coopter itself!
   a->coopter();
 
   a->orig_regs.rip = pc-2; // Take it back now, y'all
   assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
 }
-
-#if 0 // exec logger + replacer
-long unsigned int last_exec_asid = 0;
-long unsigned int just_coopted = 0;
-// in on_syscall...
-  if (unlikely(callno == 59)) {
-      struct kvm_regs regs;
-      int rv = kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &regs);
-      if (rv != 0) {
-        printf("HyDE error reading registers: %d\n", rv);
-        return;
-      }
-      __u64 fname_ptr = ARG0(regs);
-
-      // Translate
-      struct kvm_translation t;
-      t.linear_address = fname_ptr;
-      rv = kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &t);
-      if (rv != 0) {
-        printf("HyDE error reading translating: %d\n", rv);
-        return;
-      }
-
-      // Translate guest physical address to a host address so we can read/write it
-      KVMState *s = KVM_STATE(current_accel());
-      hwaddr phys_addr;
-      if (!kvm_host_addr_from_physical_physical_memory(s, t.physical_address, &phys_addr)) {
-        printf("HyDE unable to find host address for guest memory (GVA %llx -> GPA %llx -> HVA %lx => fail)\n", fname_ptr, t.physical_address, phys_addr);
-      }
-      //printf("GVA %llx -> GPA %llx -> HVA %lx => %s\n", fname_ptr, t.physical_address, phys_addr, (char*)phys_addr);
-      char* fname = (char*)phys_addr;
-      printf("SYS_exec(%s)\n", fname);
-
-      //if (strcmp(fname, "/bin/true") == 0) {
-      //  printf("\tFLIP\n");
-      //  memcpy(fname, "/bin/bash", 10);
-      //}
-  }
-// Next
-  // When we see a SYS_READ, we'll coopt it with a GETUID then let it run for real
-  if (unlikely(callno == 0)) {
-    struct kvm_regs regs;
-    int rv = kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &regs);
-    if (rv != 0) {
-      printf("HyDE error reading registers: %d\n", rv);
-      return;
-    }
-
-    if (last_exec_asid == 0 && asid != just_coopted) {
-      printf("SYS_read in %lx of %llx\n", asid, ARG0(regs));
-      last_exec_asid = asid;
-      memcpy(&coopted_regs, &regs, sizeof(regs));
-
-      // Change callno to GETUID
-      set_CALLNO(regs, 102);
-
-      rv = kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &regs);
-      if (rv != 0) {
-        printf("HyDE error updating registers: %d\n", rv);
-        return;
-      }
-    }
-  }
-#endif
-
-#if 0
-  if (asid == last_exec_asid) {
-    printf("Co-opted read->GETUID in %lx returned at %lx with value %d\n", asid, pc, (int)retval);
-    coopted_regs.rip = pc-2; // Take it back now, y'all
-    int rv = kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &coopted_regs);
-    last_exec_asid = 0;
-    just_coopted = asid;
-    if (rv != 0) {
-      printf("HyDE error updating registers: %d\n", rv);
-      return;
-    }
-  }
-#endif

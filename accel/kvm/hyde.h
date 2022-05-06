@@ -9,12 +9,12 @@ typedef struct {
   unsigned int callno;
   unsigned long args[6];
   unsigned int nargs;
-} syscall;
+} hsyscall;
 
 // Co-routine classes based off https://www.scs.stanford.edu/~dm/blog/c++-coroutines.html
 struct SyscCoroutine {
   struct promise_type {
-    syscall value_;
+    hsyscall value_;
 
     ~promise_type() { }
 
@@ -26,7 +26,7 @@ struct SyscCoroutine {
     std::suspend_never initial_suspend() { return {}; }
     std::suspend_always final_suspend() noexcept { return {}; }
     void unhandled_exception() {}
-    std::suspend_always yield_value(syscall value) {
+    std::suspend_always yield_value(hsyscall value) {
       value_ = value;
       return {};
     }

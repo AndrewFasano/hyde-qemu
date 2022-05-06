@@ -103,7 +103,7 @@ SyscCoroutine nonroot_id(asid_details* r) {
   GETREGS(r, regs);
 
   // Read first argument from guest memory
-  syscall sc;
+  hsyscall sc;
   __u64 fname = memread(r, ARG0(regs), &sc);
 
   if (fname == (__u64)-1) {

@@ -4,7 +4,7 @@
 #include "hyde_helpers.h"
 
 // Gross set of build_syscall functions without vaargs
-static void _build_syscall(syscall* s, unsigned int callno, int nargs,
+static void _build_syscall(hsyscall* s, unsigned int callno, int nargs,
     int unsigned long arg0, int unsigned long arg1, int unsigned long arg2, 
     int unsigned long arg3, int unsigned long arg4, int unsigned long arg5) {
   s->callno = callno;
@@ -17,42 +17,42 @@ static void _build_syscall(syscall* s, unsigned int callno, int nargs,
   if (nargs > 4) s->args[5] = arg5;
 }
 
-void build_syscall(syscall* s, unsigned int callno, int unsigned long arg0,
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
     int unsigned long arg1, int unsigned long arg2, int unsigned long arg3, int unsigned long arg4,
     int unsigned long arg5) {
   _build_syscall(s, callno, 5, arg0, arg1, arg2, arg3, arg4, arg5);
 }
 
-void build_syscall(syscall* s, unsigned int callno, int unsigned long arg0,
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
     int unsigned long arg1, int unsigned long arg2, int unsigned long arg3, int unsigned long arg4) {
   _build_syscall(s, callno, 5, arg0, arg1, arg2, arg3, arg4, 0);
 }
 
-void build_syscall(syscall* s, unsigned int callno, int unsigned long arg0,
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
     int unsigned long arg1, int unsigned long arg2, int unsigned long arg3) {
   _build_syscall(s, callno, 4, arg0, arg1, arg2, arg3, 0, 0);
 }
 
-void build_syscall(syscall* s, unsigned int callno, int unsigned long arg0,
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
     int unsigned long arg1, int unsigned long arg2) {
   _build_syscall(s, callno, 3, arg0, arg1, arg2, 0, 0, 0);
 }
 
-void build_syscall(syscall* s, unsigned int callno, int unsigned long arg0,
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
     int unsigned long arg1) {
   _build_syscall(s, callno, 2, arg0, arg1, 0, 0, 0, 0);
 }
 
-void build_syscall(syscall* s, unsigned int callno, int unsigned long arg0) {
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0) {
   _build_syscall(s, callno, 1, arg0, 0, 0, 0, 0, 0);
 }
 
-void build_syscall(syscall* s, unsigned int callno) {
+void build_syscall(hsyscall* s, unsigned int callno) {
   _build_syscall(s, callno, 0, /*args:*/0, 0, 0, 0, 0, 0);
 }
 
 
-__u64 memread(asid_details* r, __u64 gva, syscall* sc) {
+__u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
   // Given a GVA, return either a HVA or return -1 with sc set to a syscall which should be run
   // If provided SC is null will assert
   struct kvm_translation trans = {

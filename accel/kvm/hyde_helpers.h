@@ -32,14 +32,14 @@ extern "C" int kvm_host_addr_from_physical_physical_memory(__u64, __u64*);
 
 typedef std::pair<bool(*)(void*, long unsigned int), SyscCoroutine(*)(asid_details*)> coopter_pair;
 
-__u64 memread(asid_details*, __u64, syscall*);
+__u64 memread(asid_details*, __u64, hsyscall*);
 
-void build_syscall(syscall*, unsigned int callno);
-void build_syscall(syscall*, unsigned int, int unsigned long);
-void build_syscall(syscall*, unsigned int, int unsigned long, int unsigned long);
-void build_syscall(syscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long);
-void build_syscall(syscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long, int unsigned long);
-void build_syscall(syscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long, int unsigned long, int unsigned long);
-void build_syscall(syscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long, int unsigned long, int unsigned long, int unsigned long);
+void build_syscall(hsyscall*, unsigned int callno);
+void build_syscall(hsyscall*, unsigned int, int unsigned long);
+void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long);
+void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long);
+void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long, int unsigned long);
+void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long, int unsigned long, int unsigned long);
+void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long, int unsigned long, int unsigned long, int unsigned long);
 
 #endif

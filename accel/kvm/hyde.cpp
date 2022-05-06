@@ -10,13 +10,10 @@
 #include <map>
 #include <stdio.h>
 #include <vector>
+#include <dlfcn.h>
 #include "qemu/compiler.h"
 #include "hyde.h"
-#include "hyde_helpers.h"
-
-std::vector<coopter_pair> coopters; // Pair of bool() which indicates if coopter should start and coopter
-std::map<long unsigned int, asid_details*> active_details; // asid->details
-
+#include "hyde_internal.h"
 
 extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc) {
   asid_details *a;
@@ -58,19 +55,20 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
 
     // Then update state to inject desired syscall and args
     set_CALLNO(r, sysc.callno);
-    if (sysc.nargs > 0) 
+    if (sysc.nargs > 0)
       set_ARG0(r, sysc.args[0]);
-    if (sysc.nargs > 1) 
+    if (sysc.nargs > 1)
       set_ARG1(r, sysc.args[1]);
-    if (sysc.nargs > 2) 
+    if (sysc.nargs > 2)
       set_ARG2(r, sysc.args[2]);
-    if (sysc.nargs > 3) 
+    if (sysc.nargs > 3)
       set_ARG3(r, sysc.args[3]);
-    if (sysc.nargs > 4) 
+    if (sysc.nargs > 4)
       set_ARG4(r, sysc.args[4]);
-    if (sysc.nargs > 5) 
+    if (sysc.nargs > 5)
       set_ARG4(r, sysc.args[5]);
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &r) == 0);
+
 	} else {
 		a->coopter.destroy();
 		active_details.erase(asid);
@@ -84,51 +82,119 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   // We co-opted this syscall - store it's retval and reset state!
   asid_details * a = active_details.at(asid);
 
-  // Store retval then and advance generator - note its return (the next syscall to inject) won't be
-  // consumed until the next syscall
-  a->retval = retval;
-  a->coopter();
-
 	if (!a->coopter.done() || a->skip) {
     // If it finished and wants to skip the original, don't restore
     a->orig_regs.rip = pc-2; // Take it back now, y'all
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
   }
+
+  // Store retval then and advance generator - note its return (the next syscall to inject) won't be
+  // consumed until the next syscall.
+  a->retval = retval;
+  a->coopter();
 }
 
-
-SyscCoroutine nonroot_id(asid_details* r) {
-  // Get guest registers so we can examine the first argument
-  struct kvm_regs regs;
-  GETREGS(r, regs);
-
-  // Read first argument from guest memory
-  hsyscall sc;
-  __u64 fname = memread(r, ARG0(regs), &sc);
-
-  if (fname == (__u64)-1) {
-    // Read failed - we need to injrect a syscall
-    co_yield sc;
-    fname = memread(r, ARG0(regs), nullptr);
+bool try_load_coopter(char* path) {
+  void* handle = dlopen(path, RTLD_LAZY);
+  if (handle == NULL) {
+    printf("Could not open capability at %s: %s\n", path, dlerror());
+    assert(0);
   }
 
-  printf("SYS_exec(%s)\n", (char*)fname);
-  build_syscall(&sc, __NR_getuid);
-  co_yield sc;
-
-  if (r->retval != 0) {
-    auto uid = r->retval;
-
-    build_syscall(&sc, __NR_getpid);
-    co_yield sc;
-    printf("HyDE:  myinj]: Non-root process! UID is %ld PID is %ld\n", uid, r->retval);
+  bool (*do_coopt)(void*, long unsigned int);
+  do_coopt = (bool (*)(void*, long unsigned int))dlsym(handle, "should_coopt");
+  if (do_coopt == NULL) {
+    printf("Could not find do_coopt function in capability: %s\n", dlerror());
+    return false;
   }
-}
-
-bool coopt_with_nonroot_id(void*cpu, long unsigned int callno) {
-  return callno == 59;
+  SyscCoroutine (*coopter)(asid_details*);
+  coopter = (SyscCoroutine (*)(asid_details*))dlsym(handle, "start_coopter");
+  if (coopter == NULL) {
+    printf("Could not find coopter function in capability: %s\n", dlerror());
+    return false;
+  }
+  coopters.push_back(coopter_pair(*do_coopt, *coopter));
+  return true;
 }
 
 extern "C" void hyde_init(void) {
-  //coopters.push_back(coopter_pair(&coopt_with_nonroot_id, &nonroot_id));
+  const char* path = "/home/andrew/hhyde/cap_libs/norootid.so";
+  assert(try_load_coopter((char*)path));
+}
+
+// Gross set of build_syscall functions without vaargs
+static void _build_syscall(hsyscall* s, unsigned int callno, int nargs,
+    int unsigned long arg0, int unsigned long arg1, int unsigned long arg2,
+    int unsigned long arg3, int unsigned long arg4, int unsigned long arg5) {
+  s->callno = callno;
+  s->nargs = nargs;
+  if (nargs > 0) s->args[0] = arg0;
+  if (nargs > 1) s->args[1] = arg1;
+  if (nargs > 2) s->args[2] = arg2;
+  if (nargs > 3) s->args[3] = arg3;
+  if (nargs > 4) s->args[4] = arg4;
+  if (nargs > 4) s->args[5] = arg5;
+}
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
+    int unsigned long arg1, int unsigned long arg2, int unsigned long arg3, int unsigned long arg4,
+    int unsigned long arg5) {
+  _build_syscall(s, callno, 5, arg0, arg1, arg2, arg3, arg4, arg5);
+}
+
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
+    int unsigned long arg1, int unsigned long arg2, int unsigned long arg3, int unsigned long arg4) {
+  _build_syscall(s, callno, 5, arg0, arg1, arg2, arg3, arg4, 0);
+}
+
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
+    int unsigned long arg1, int unsigned long arg2, int unsigned long arg3) {
+  _build_syscall(s, callno, 4, arg0, arg1, arg2, arg3, 0, 0);
+}
+
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
+    int unsigned long arg1, int unsigned long arg2) {
+  _build_syscall(s, callno, 3, arg0, arg1, arg2, 0, 0, 0);
+}
+
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
+    int unsigned long arg1) {
+  _build_syscall(s, callno, 2, arg0, arg1, 0, 0, 0, 0);
+}
+
+void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0) {
+  _build_syscall(s, callno, 1, arg0, 0, 0, 0, 0, 0);
+}
+
+void build_syscall(hsyscall* s, unsigned int callno) {
+  _build_syscall(s, callno, 0, /*args:*/0, 0, 0, 0, 0, 0);
+}
+
+
+__u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
+  // Given a GVA, return either a HVA or return -1 with sc set to a syscall which should be run
+  // If provided SC is null will assert
+  struct kvm_translation trans = {
+    .linear_address = gva
+  };
+  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+
+  // Couldn't translate, setup SC to be something to page this in
+  if (trans.physical_address == (unsigned long)-1) {
+    if (sc != nullptr) {
+      build_syscall(sc, __NR_access, gva);
+      return (__u64)-1;
+    } else {
+      printf("[HYDE]: Fatal error, could not translate %llx and not able to inject a syscall\n", gva);
+      assert(0);
+    }
+  }
+
+  // Successfully translated GVA to GPA, now translate to HVA
+  __u64 phys_addr;
+  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &phys_addr) == 1);
+  return phys_addr;
+}
+
+int getregs(asid_details *r, struct kvm_regs *regs) {
+  return kvm_vcpu_ioctl(r->cpu, KVM_GET_REGS, regs);
 }

@@ -89,7 +89,7 @@ void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long
 #define TOKENPASTE(x, y) x ## y
 #define TOKENPASTE2(x, y) TOKENPASTE(x, y)
 #define __scratchvar(x) TOKENPASTE2(x, __LINE__ )
-#define __memread(out, r, ptr, success) do { \
+#define __memread_status(out, r, ptr, success) do { \
     *success = false; \
     hsyscall __scratchvar(sc); \
     out = (typeof(out)) memread(r, (__u64)ptr, &__scratchvar(sc)); \
@@ -102,9 +102,22 @@ void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long
     } else { *success = true; } \
   } while (0)
 
+#define __memread(out, r, ptr) do { \
+    hsyscall __scratchvar(sc); \
+    out = (typeof(out)) memread(r, (__u64)ptr, &__scratchvar(sc)); \
+    if ((__u64)out == (__u64)-1) { \
+      co_yield __scratchvar(sc); \
+      out = (typeof(out)) memread(r, (__u64)ptr, nullptr); \
+      if ((__u64)out == (__u64)-1) { \
+        assert(0 && "memory read failed"); \
+      } \
+    } \
+  } while (0)
+
 hsyscall* _allocate_hsyscall();
 
-#define map_guest_pointer(varname, details, ptr, success) __memread(varname, details, ptr, success)
+#define map_guest_pointer_status(varname, details, ptr, success) __memread_status(varname, details, ptr, success)
+#define map_guest_pointer(varname, details, ptr) __memread(varname, details, ptr)
 
 #define yield_syscall(r, ...) (build_syscall(&r->scratch, __VA_ARGS__), co_yield r->scratch, r->retval)
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return;};

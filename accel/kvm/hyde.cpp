@@ -118,7 +118,7 @@ bool try_load_coopter(char* path) {
 }
 
 extern "C" void hyde_init(void) {
-  const char* path = "/home/andrew/hhyde/cap_libs/norootid.so";
+  const char* path = "/home/andrew/hhyde/cap_libs/envmgr.so";
   assert(try_load_coopter((char*)path));
 }
 

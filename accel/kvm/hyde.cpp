@@ -181,11 +181,12 @@ __u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
   // Couldn't translate, setup SC to be something to page this in
   if (trans.physical_address == (unsigned long)-1) {
     if (sc != nullptr) {
-      build_syscall(sc, __NR_access, gva);
+      build_syscall(sc, __NR_access, gva, 0);
       return (__u64)-1;
     } else {
-      printf("[HYDE]: Fatal error, could not translate %llx and not able to inject a syscall\n", gva);
-      assert(0);
+      printf("[HYDE]: Fatal error, could not translate 0x%llx and not able to inject a syscall\n", gva);
+      return (__u64)-1;
+      //assert(0);
     }
   }
 

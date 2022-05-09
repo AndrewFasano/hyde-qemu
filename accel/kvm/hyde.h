@@ -6,14 +6,22 @@
 #include <linux/kvm.h>
 #include <cassert>
 
-//rax callno, args in RDI, RDX, RSI, R10, R8, R9
+//rax callno, args in RDI, RSX, RDX, R10, R8, R9
 #define CALLNO(s) s.rax
 #define ARG0(s) s.rdi
-#define ARG1(s) s.rdx
-#define ARG2(s) s.rsi
+#define ARG1(s) s.rsi
+#define ARG2(s) s.rdx
 #define ARG3(s) s.r10
 #define ARG4(s) s.r8
 #define ARG5(s) s.r9
+
+#define get_arg(s, i)  ((i == 0) ? ARG0(s) : \
+                        (i == 1) ? ARG1(s) : \
+                        (i == 2) ? ARG2(s) : \
+                        (i == 3) ? ARG3(s) : \
+                        (i == 4) ? ARG4(s) : \
+                        (i == 5) ? ARG5(s) : \
+                         -1)
 
 #define set_CALLNO(s, x) s.rax =x
 #define set_ARG0(s, x) s.rdi =x
@@ -64,6 +72,7 @@ typedef struct {
   long unsigned int retval;
   unsigned int counter;
   bool skip;
+  hsyscall scratch;
 } asid_details;
 
 __u64 memread(asid_details*, __u64, hsyscall*);
@@ -75,6 +84,38 @@ void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long
 void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long, int unsigned long);
 void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long, int unsigned long, int unsigned long);
 void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long, int unsigned long, int unsigned long, int unsigned long, int unsigned long);
+
+// macros for memory read and syscall yielding
+#define TOKENPASTE(x, y) x ## y
+#define TOKENPASTE2(x, y) TOKENPASTE(x, y)
+#define __scratchvar(x) TOKENPASTE2(x, __LINE__ )
+#define __memread(out, r, ptr, success) do { \
+    *success = false; \
+    hsyscall __scratchvar(sc); \
+    out = (typeof(out)) memread(r, (__u64)ptr, &__scratchvar(sc)); \
+    if ((__u64)out == (__u64)-1) { \
+      co_yield __scratchvar(sc); \
+      out = (typeof(out)) memread(r, (__u64)ptr, nullptr); \
+      if ((__u64)out != (__u64)-1) { \
+        *success = true;\
+      } \
+    } else { *success = true; } \
+  } while (0)
+
+hsyscall* _allocate_hsyscall();
+
+#define map_guest_pointer(varname, details, ptr, success) __memread(varname, details, ptr, success)
+
+#define yield_syscall(r, ...) (build_syscall(&r->scratch, __VA_ARGS__), co_yield r->scratch, r->retval)
+#define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return;};
+
+// Functions *a capability must provide* -  extern C to avoid mangling
+extern "C" {
+  bool should_coopt(void*cpu, long unsigned int callno);
+  SyscCoroutine start_coopter(asid_details* details);
+}
+
+
 
 
 #endif

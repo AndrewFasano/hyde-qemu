@@ -16,7 +16,8 @@
 #include "hyde_internal.h"
 
 extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc) {
-  asid_details *a;
+  asid_details *a = NULL;
+  struct kvm_regs r;
 
   if (callno == 15 || callno == __NR_rt_sigreturn) { // 15 is sigreturn
     // We should never interfere with these, even if we're co-opting a process
@@ -25,35 +26,81 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   }
 
   if (!active_details.contains(asid)) {
-    // No co-opter for the current asid - should we start one?
+    // No co-opter for the current asid. Check with all registered coopters to see if any
+    // want to start on this syscall.
+    bool match = false;
     for (auto & coopter : coopters) {
       if (coopter.first(cpu, callno)) {
+        //printf("\n----------\n\nCREATE coopter in %lx\n", asid);
+        // A should_coopt function (.first) has returned true, set this asid
+        // up to be coopted by the coopter generator (.second).
         a = new asid_details;
-        a->counter = 0;
-        a->cpu = cpu;
         active_details[asid] = a;
-        a->coopter = coopter.second(active_details[asid]).h_;
+        a->cpu = cpu;
+        a->asid = asid;
         a->skip = false;
+        a->modify_original_args = false;
+
+        // Get & store original registers before we run the coopter's first iteration
+        assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
+        memcpy(&a->orig_regs, &r, sizeof(r));
+
+        // XXX: this *runs* the coopter function up until its first co_yield/co_ret
+        a->coopter = coopter.second(active_details[asid]).h_;
+        match = true;
         break;
       }
     }
-  }
-
-  if (!active_details.contains(asid)) {
-    return;
-  }
-
-  a = active_details.at(asid);
-
-  auto &promise = a->coopter.promise();
-	if (!a->coopter.done()) {
-    struct kvm_regs r;
-    auto sysc = promise.value_;
-    // First store original registers into asid_details
+    if (!match) {
+      // No active co-opter for this asid, and none wanted to start so let's leave it alone
+      return; 
+    }
+  } else {
+    // We have a co-opter for this asid. Let's advance it here!
+    a = active_details.at(asid);
+ 
+    // Set orig regs so co-opter can see them
     assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
     memcpy(&a->orig_regs, &r, sizeof(r));
 
-    // Then update state to inject desired syscall and args
+    // Now advance co-opter. If it yields, we inject below
+    a->coopter();
+  }
+
+  // By here `a` should always be set, otherwise we returned
+  assert(a != NULL);
+
+  // The co-opter has run (either from init or in the last sysret) up to a yield/ret
+  if (a->modify_original_args) {
+    // If it wanted to modify original registers (i.e., it's *not* injecting a syscall)
+    // then we set registers to whatever it stored (i.e., modified) in orig_regs
+    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
+  }
+
+  hsyscall sysc;
+  sysc.nargs = (unsigned int)-1;
+  if (a->skip) {
+    // We "skip" by running a no-op and cleaning up on return
+    // because we've already run the `syscall` instruction
+    // and we want to run the corresponding `sysret` to clean it up
+    // instead of trying to do that all from here.
+    sysc.nargs = 0;
+    sysc.callno = __NR_getuid;
+    // On return, we'll restore orig_regs - caller who requested the skip should modify those
+
+  } else {
+    auto &promise = a->coopter.promise();
+    if (!a->coopter.done()) {
+      sysc = promise.value_;
+    }
+  }
+
+  if (sysc.nargs != (unsigned int)-1) {
+    // DEBUG: log original registers before we clobber
+    //printf("In asid %lx >> ", asid);
+    //dump_regs(a->orig_regs);
+
+    // Update registers to the yielded syscall
     set_CALLNO(r, sysc.callno);
     if (sysc.nargs > 0)
       set_ARG0(r, sysc.args[0]);
@@ -66,10 +113,20 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     if (sysc.nargs > 4)
       set_ARG4(r, sysc.args[4]);
     if (sysc.nargs > 5)
-      set_ARG4(r, sysc.args[5]);
+      set_ARG5(r, sysc.args[5]);
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &r) == 0);
 
-	} else {
+    // DEBUG: log clobered registers
+    //a->injected_callno = sysc.callno;
+    //assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
+    //printf("In asid %lx △> ", asid);
+    //dump_regs(r);
+
+  } else {
+    // At this point, the original syscall is about to be issued (any prior changes
+    // were cleaned up in the last sysret). If the co-opter wishes to change the
+    // current syscall, it would have indicated by setting modify_original_args
+    // and changing orig_args
 		a->coopter.destroy();
 		active_details.erase(asid);
 	}
@@ -82,7 +139,21 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   // We co-opted this syscall - store it's retval and reset state!
   asid_details * a = active_details.at(asid);
 
-	if (!a->coopter.done() || a->skip) {
+  //printf("In asid %lx << return from coopted syscall. Original was %lld, injected was %d, returns %lx\n", asid,
+  //    CALLNO(a->orig_regs), a->injected_callno, retval);
+
+  if (a->skip) {
+    // We skipped the original syscall, replacing it with a getuid
+    // let's clean up by restoring orig_regs with *pc* not decremented
+    a->orig_regs.rip = pc;
+    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
+
+		a->coopter.destroy();
+		active_details.erase(asid);
+    return;
+  }
+
+	if (!a->coopter.done() || !a->skip) {
     // If it finished and wants to skip the original, don't restore
     a->orig_regs.rip = pc-2; // Take it back now, y'all
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
@@ -91,7 +162,17 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   // Store retval then and advance generator - note its return (the next syscall to inject) won't be
   // consumed until the next syscall.
   a->retval = retval;
-  a->coopter();
+  //a->coopter();
+
+#if 0
+  if (a->modify_original_args) {
+    // Coopter modified the args in some way while it was running
+    // so we want to re-restore them (with the changes) now
+    printf("Modifying original args!\n");
+    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
+    a->modify_original_args = false;
+  }
+#endif
 }
 
 bool try_load_coopter(char* path) {
@@ -133,12 +214,12 @@ static void _build_syscall(hsyscall* s, unsigned int callno, int nargs,
   if (nargs > 2) s->args[2] = arg2;
   if (nargs > 3) s->args[3] = arg3;
   if (nargs > 4) s->args[4] = arg4;
-  if (nargs > 4) s->args[5] = arg5;
+  if (nargs > 5) s->args[5] = arg5;
 }
 void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
     int unsigned long arg1, int unsigned long arg2, int unsigned long arg3, int unsigned long arg4,
     int unsigned long arg5) {
-  _build_syscall(s, callno, 5, arg0, arg1, arg2, arg3, arg4, arg5);
+  _build_syscall(s, callno, 6, arg0, arg1, arg2, arg3, arg4, arg5);
 }
 
 void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
@@ -186,7 +267,6 @@ __u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
     } else {
       printf("[HYDE]: Fatal error, could not translate 0x%llx and not able to inject a syscall\n", gva);
       return (__u64)-1;
-      //assert(0);
     }
   }
 
@@ -198,4 +278,12 @@ __u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
 
 int getregs(asid_details *r, struct kvm_regs *regs) {
   return kvm_vcpu_ioctl(r->cpu, KVM_GET_REGS, regs);
+}
+
+int getregs(void *cpu, struct kvm_regs *regs) {
+  return kvm_vcpu_ioctl(cpu, KVM_GET_REGS, regs);
+}
+
+int setregs(asid_details *r, struct kvm_regs *regs) {
+  return kvm_vcpu_ioctl(r->cpu, KVM_SET_REGS, &r) == 0;
 }

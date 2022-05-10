@@ -7,13 +7,13 @@
 #include <cassert>
 
 //rax callno, args in RDI, RSX, RDX, R10, R8, R9
-#define CALLNO(s) s.rax
-#define ARG0(s) s.rdi
-#define ARG1(s) s.rsi
-#define ARG2(s) s.rdx
-#define ARG3(s) s.r10
-#define ARG4(s) s.r8
-#define ARG5(s) s.r9
+#define CALLNO(s) (s).rax
+#define ARG0(s) (s).rdi
+#define ARG1(s) (s).rsi
+#define ARG2(s) (s).rdx
+#define ARG3(s) (s).r10
+#define ARG4(s) (s).r8
+#define ARG5(s) (s).r9
 
 #define get_arg(s, i)  ((i == 0) ? ARG0(s) : \
                         (i == 1) ? ARG1(s) : \
@@ -30,6 +30,7 @@
 #define set_ARG3(s, x) s.r10 =x
 #define set_ARG4(s, x) s.r8  =x
 #define set_ARG5(s, x) s.r9  =x
+#define set_RET(s, x) s.rax  =x
 
 typedef struct {
   unsigned int callno;
@@ -70,13 +71,17 @@ typedef struct {
   struct kvm_regs orig_regs;
   void* cpu;
   long unsigned int retval;
-  unsigned int counter;
+  //unsigned int injected_callno; // Debug only
+  unsigned int asid;
   bool skip;
+  bool modify_original_args;
   hsyscall scratch;
 } asid_details;
 
 __u64 memread(asid_details*, __u64, hsyscall*);
-int getregs(asid_details *, struct kvm_regs *);
+int getregs(asid_details*, struct kvm_regs *);
+int getregs(void*, struct kvm_regs *);
+int setregs(asid_details*, struct kvm_regs *);
 void build_syscall(hsyscall*, unsigned int callno);
 void build_syscall(hsyscall*, unsigned int, int unsigned long);
 void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long);
@@ -121,6 +126,12 @@ hsyscall* _allocate_hsyscall();
 
 #define yield_syscall(r, ...) (build_syscall(&r->scratch, __VA_ARGS__), co_yield r->scratch, r->retval)
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return;};
+
+void dump_regs(struct kvm_regs r) {
+  printf("Callno %lld (%llx, %llx, %llx, %llx, %llx, %llx)\n", CALLNO(r), ARG0(r), ARG1(r), ARG2(r),
+        ARG3(r), ARG4(r), ARG5(r));
+
+}
 
 // Functions *a capability must provide* -  extern C to avoid mangling
 extern "C" {

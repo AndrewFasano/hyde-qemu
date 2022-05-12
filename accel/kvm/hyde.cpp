@@ -41,13 +41,14 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     // No co-opter for the current asid. Check with all registered coopters to see if any
     // want to start on this syscall.
     bool match = false;
-    for (auto & coopter : coopters) {
-      if (coopter.first(cpu, callno)) {
+    for (coopter_f* coopter : coopters) {
+      create_coopt_t *f = (*coopter)(cpu, callno);
+      if (f != NULL) {
 #ifdef DEBUG
         printf("\n----------\n\nCREATE coopter in %lx\n", asid);
 #endif
-        // A should_coopt function (.first) has returned true, set this asid
-        // up to be coopted by the coopter generator (.second).
+        // A should_coopt function has returned non-null, set this asid
+        // up to be coopted by the coopter generator which it returned
         a = new asid_details;
         active_details[asid] = a;
         a->cpu = cpu;
@@ -61,7 +62,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
         memcpy(&a->orig_regs, &r, sizeof(r));
 
         // XXX: this *runs* the coopter function up until its first co_yield/co_ret
-        a->coopter = coopter.second(active_details[asid]).h_;
+        a->coopter = (*f)(active_details[asid]).h_;
         match = true;
         break;
       }
@@ -213,19 +214,13 @@ bool try_load_coopter(char* path) {
     assert(0);
   }
 
-  bool (*do_coopt)(void*, long unsigned int);
-  do_coopt = (bool (*)(void*, long unsigned int))dlsym(handle, "should_coopt");
+  coopter_f* do_coopt;
+  do_coopt = (coopter_f*)dlsym(handle, "should_coopt");
   if (do_coopt == NULL) {
     printf("Could not find do_coopt function in capability: %s\n", dlerror());
     return false;
   }
-  SyscCoroutine (*coopter)(asid_details*);
-  coopter = (SyscCoroutine (*)(asid_details*))dlsym(handle, "start_coopter");
-  if (coopter == NULL) {
-    printf("Could not find coopter function in capability: %s\n", dlerror());
-    return false;
-  }
-  coopters.push_back(coopter_pair(*do_coopt, *coopter));
+  coopters.push_back(*do_coopt);
   return true;
 }
 

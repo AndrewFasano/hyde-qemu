@@ -2916,15 +2916,7 @@ int kvm_cpu_exec(CPUState *cpu)
             }else{
               // Sysret
               on_sysret((void*)cpu, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0]);
-              
             }
-            //struct kvm_regs regs;
-            //int r = kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &regs);
-            //if (r == 0) {
-            //  printf("HyDE vm exit at pc %llx, run->mmio.phys_addr is %llx!\n", regs.rcx, run->mmio.phys_addr);
-            //} else {
-            //  printf("HyDE vm exit but error getting regs: %d\n", -errno);
-            //}
           }
           ret = 0;
           break;

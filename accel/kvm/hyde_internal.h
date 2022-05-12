@@ -4,6 +4,7 @@
 #include <linux/types.h>
 #include <vector>
 #include <map>
+#include <set>
 #include "hyde.h"
 
 extern "C" int kvm_vcpu_ioctl(void *cpu, int type, ...);
@@ -12,5 +13,7 @@ typedef std::pair<bool(*)(void*, long unsigned int), SyscCoroutine(*)(asid_detai
 
 std::vector<coopter_pair> coopters; // Pair of bool() which indicates if coopter should start and coopter
 std::map<long unsigned int, asid_details*> active_details; // asid->details
+
+std::set<long unsigned int> did_seccomp;
 
 #endif

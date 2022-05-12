@@ -6,6 +6,8 @@
 #include <linux/kvm.h>
 #include <cassert>
 
+//#define DEBUG
+
 //rax callno, args in RDI, RSX, RDX, R10, R8, R9
 #define CALLNO(s) (s).rax
 #define ARG0(s) (s).rdi
@@ -71,17 +73,22 @@ typedef struct {
   struct kvm_regs orig_regs;
   void* cpu;
   long unsigned int retval;
-  //unsigned int injected_callno; // Debug only
+#ifdef DEBUG
+  unsigned int injected_callno; // Debug only
+#endif
   unsigned int asid;
   bool skip;
+  //bool finished;
   bool modify_original_args;
   hsyscall scratch;
 } asid_details;
 
 __u64 memread(asid_details*, __u64, hsyscall*);
+__u64 translate(void *cpu, __u64 gva, int* status);
 int getregs(asid_details*, struct kvm_regs *);
 int getregs(void*, struct kvm_regs *);
 int setregs(asid_details*, struct kvm_regs *);
+int setregs(void*, struct kvm_regs *);
 void build_syscall(hsyscall*, unsigned int callno);
 void build_syscall(hsyscall*, unsigned int, int unsigned long);
 void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long);
@@ -97,10 +104,10 @@ void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long
 #define __memread_status(out, r, ptr, success) do { \
     *success = false; \
     hsyscall __scratchvar(sc); \
-    out = (typeof(out)) memread(r, (__u64)ptr, &__scratchvar(sc)); \
+    out = (__typeof__(out)) memread(r, (__u64)ptr, &__scratchvar(sc)); \
     if ((__u64)out == (__u64)-1) { \
       co_yield __scratchvar(sc); \
-      out = (typeof(out)) memread(r, (__u64)ptr, nullptr); \
+      out = (__typeof__(out)) memread(r, (__u64)ptr, nullptr); \
       if ((__u64)out != (__u64)-1) { \
         *success = true;\
       } \
@@ -109,10 +116,10 @@ void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long
 
 #define __memread(out, r, ptr) do { \
     hsyscall __scratchvar(sc); \
-    out = (typeof(out)) memread(r, (__u64)ptr, &__scratchvar(sc)); \
+    out = (__typeof__(out)) memread(r, (__u64)ptr, &__scratchvar(sc)); \
     if ((__u64)out == (__u64)-1) { \
       co_yield __scratchvar(sc); \
-      out = (typeof(out)) memread(r, (__u64)ptr, nullptr); \
+      out = (__typeof__(out)) memread(r, (__u64)ptr, nullptr); \
       if ((__u64)out == (__u64)-1) { \
         assert(0 && "memory read failed"); \
       } \
@@ -121,8 +128,8 @@ void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long
 
 hsyscall* _allocate_hsyscall();
 
-#define map_guest_pointer_status(varname, details, ptr, success) __memread_status(varname, details, ptr, success)
-#define map_guest_pointer(varname, details, ptr) __memread(varname, details, ptr)
+#define map_guest_pointer_status(details, varname, ptr, success) __memread_status(varname, details, ptr, success)
+#define map_guest_pointer(details, varname, ptr) __memread(varname, details, ptr)
 
 #define yield_syscall(r, ...) (build_syscall(&r->scratch, __VA_ARGS__), co_yield r->scratch, r->retval)
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return;};

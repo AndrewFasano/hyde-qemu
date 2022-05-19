@@ -79,6 +79,7 @@ typedef struct {
   unsigned int asid;
   bool skip;
   //bool finished;
+  unsigned long custom_return;
   bool modify_original_args;
   hsyscall scratch;
 } asid_details;
@@ -134,10 +135,16 @@ hsyscall* _allocate_hsyscall();
 #define yield_syscall(r, ...) (build_syscall(&r->scratch, __VA_ARGS__), co_yield r->scratch, r->retval)
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return;};
 
-void dump_regs(struct kvm_regs r) {
+void dump_sc(struct kvm_regs r) {
   printf("Callno %lld (%llx, %llx, %llx, %llx, %llx, %llx)\n", CALLNO(r), ARG0(r), ARG1(r), ARG2(r),
         ARG3(r), ARG4(r), ARG5(r));
+}
 
+void dump_regs(struct kvm_regs r) {
+  printf("PC: %016llx    RAX: %016llx    RBX %016llx    RCX %016llx    RDX %016llx   RSI %016llx   RDI %016llx   RSP %016llx\n",
+      r.rip, r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rsp);
+  //printf("\t RBP: %016llx    R8 %016llx    R9 %016llx    R10 %016llx    R11 %016llx    R12 %016llx    R13 %016llx\n", r.rbp, r.r8, r.r9, r.r10, r.r11, r.r12, r.r13);
+  //printf("\t R14: %016llx    R15: %016llx    RFLAGS %016llx\n", r.r14, r.r15, r.rflags);
 }
 
 // create_coopt_t type takes in asid_details*, returns SysCoroutine

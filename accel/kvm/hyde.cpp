@@ -60,6 +60,8 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
         // Get & store original registers before we run the coopter's first iteration
         assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
         memcpy(&a->orig_regs, &r, sizeof(r));
+        // CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags?
+        a->orig_regs.rflags = (a->orig_regs.r11 & 0x3c7fd7) | 0x2;
 
         // XXX: this *runs* the coopter function up until its first co_yield/co_ret
         a->coopter = (*f)(active_details[asid]).h_;
@@ -225,7 +227,7 @@ bool try_load_coopter(char* path) {
 }
 
 extern "C" void hyde_init(void) {
-  const char* path = "/home/andrew/hhyde/cap_libs/envmgr.so";
+  const char* path = "/home/andrew/hhyde/cap_libs/cap.so";
   assert(try_load_coopter((char*)path));
 }
 

@@ -15,11 +15,12 @@
 #include "hyde.h"
 #include "hyde_internal.h"
 
-#define WINDOWS
-
 extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc) {
   asid_details *a = NULL;
   struct kvm_regs r;
+
+#ifndef WINDOWS
+  // Linux specific: avoid sigreturn and seccomp'd processes
 
   if (callno == 15 || callno == __NR_rt_sigreturn) { // 15 is sigreturn
     // We should never interfere with these, even if we're co-opting a process
@@ -38,6 +39,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     }
     return;
   }
+#endif
 
   if (!active_details.contains(asid)) {
     // No co-opter for the current asid. Check with all registered coopters to see if any
@@ -81,8 +83,6 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   } else {
     // We have a co-opter for this asid. Let's advance it here!
     a = active_details.at(asid);
-
-    //if (a->finished) return; // WTF?
  
     // Set orig regs so co-opter can see them
     assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
@@ -111,7 +111,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     // and we want to run the corresponding `sysret` to clean it up
     // instead of trying to do that all from here.
 #ifdef WINDOWS
-    sysc.nargs = 0; // NtTestAlert
+    sysc.nargs = 0; // NtTestAlert - Probably want to find a better no-o
     sysc.callno = 0x01c0;
 #else
     sysc.nargs = 0;
@@ -122,26 +122,16 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   } else {
     auto &promise = a->coopter.promise();
     if (!a->coopter.done()) {
+      // The coopter yielded a syscall
       sysc = promise.value_;
-#ifdef DEBUG
-      printf("\tCo-opter has stuff to do...\n");
     }else{
-      printf("\t DONE in enter\n");
-      //assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0); // This is junk, right?
-#endif
+      // The coopter returned - leave sysc with nargs=-1
     }
   }
 
   if (sysc.nargs != (unsigned int)-1) {
-    // DEBUG: log original registers before we clobber
-#ifdef DEBUG
-    if (!a->skip) {
-      printf("In asid %lx @ %lx >> ", asid, pc);
-      dump_regs(a->orig_regs);
-    }
-#endif
-
-    // Update registers to the yielded syscall
+    // Coopter yielded a syscall which we have in sysc.
+    // Now update registers (r) such that the syscall is run
     set_CALLNO(r, sysc.callno); // callno is always RAX
                                 // Arguments vary by OS
 #ifdef WINDOWS
@@ -153,8 +143,30 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
       r.r8 = sysc.args[2];
     if (sysc.nargs > 3)
       r.r9 = sysc.args[3];
-    if (sysc.nargs > 4)
-      assert(0 && "Too many for now");
+
+    if (sysc.nargs > 4) {
+      unsigned long int *stack;
+
+      // XXX: Do we need to unshift later? I don't think so, because we restore regs on ret
+      r.rsp -= 0x38; // TODO: dynamic based on nargs
+
+      // Note this could fail - no easy way to inject a syscall from in this fn
+      stack = (unsigned long int*)memread(a, r.rsp, nullptr);
+      assert((__u64)stack != (__u64)-1 && "whoops: failed to read stack during injection");
+
+      // I have no idea what's on the stack between 0 and 0x28 (up to stack[4]) - assuming it's
+      // all just junk - so we shift RSP far enough that we can write at +0x20 without
+      // any issues
+      if (sysc.nargs > 4) {
+        stack[5] = sysc.args[4];
+        //printf("Set stack[5] to %lx\n", sysc.args[4]);
+      }
+
+      if (sysc.nargs > 5) {
+        stack[6] = sysc.args[5];
+        //printf("Set stack[6] to %lx\n", sysc.args[5]);
+      }
+    }
 #else
     if (sysc.nargs > 0)
       set_ARG0(r, sysc.args[0]);
@@ -169,6 +181,9 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     if (sysc.nargs > 5)
       set_ARG5(r, sysc.args[5]);
 #endif
+
+    //dump_sc_with_stack(a, r); // DEBUG
+
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &r) == 0);
 
     // DEBUG: log clobered registers
@@ -200,10 +215,6 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
     return;
   }
   asid_details * a = active_details.at(asid);
-  //if (a->finished) {
-	//	active_details.erase(asid);
-  //  return;
-  //}
 
   // We co-opted this syscall - store it's retval and reset state!
 #ifdef DEBUG
@@ -238,6 +249,8 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
     dump_regs(a->orig_regs);
   } else {
     // Finished and it doesn't want to skip
+    // XXX: what if we shifted RSP in the last syscall we injected? TODO XXX need to handle
+    // this would happen if we injected with > 4 args and skip
     printf("\tCo-opter done\n");
 #endif
   }
@@ -328,7 +341,17 @@ __u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
   // Couldn't translate, setup SC to be something to page this in
   if (trans.physical_address == (unsigned long)-1) {
     if (sc != nullptr) {
+#ifdef WINDOWS
+      // Inject NtLoadDriver(gva). XXX will have side effects if gva is a pointer to
+      // a UNICODE_STRING struct with a value that starts with
+      // '\\registry\\machine\\SYSTEM\\CurrentControlSet\\Services\\' and has Type=1
+      // XXX Might not even read pointer if process doesn't have permissions to load drivers?
+      build_syscall(sc, 0x0105, gva);
+      // NtUnmapViewOfSection - Will it work with invalid handle?
+      //build_syscall(sc, 0x002a, 0, gva);
+#else
       build_syscall(sc, __NR_access, gva, 0);
+#endif
       return (__u64)-1;
     } else {
       //printf("[HYDE] Error, could not translate 0x%llx and not able to inject a syscall\n", gva);

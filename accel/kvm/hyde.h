@@ -7,6 +7,7 @@
 #include <cassert>
 
 //#define DEBUG
+#define WINDOWS
 
 //rax callno, args in RDI, RSX, RDX, R10, R8, R9
 #define CALLNO(s) (s).rax
@@ -122,6 +123,7 @@ void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long
       co_yield __scratchvar(sc); \
       out = (__typeof__(out)) memread(r, (__u64)ptr, nullptr); \
       if ((__u64)out == (__u64)-1) { \
+        printf("FATAL: cannot read %lx\n", (long unsigned int)ptr); fflush(NULL); \
         assert(0 && "memory read failed"); \
       } \
     } \
@@ -136,8 +138,31 @@ hsyscall* _allocate_hsyscall();
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return;};
 
 void dump_sc(struct kvm_regs r) {
-  printf("Callno %lld (%llx, %llx, %llx, %llx, %llx, %llx)\n", CALLNO(r), ARG0(r), ARG1(r), ARG2(r),
-        ARG3(r), ARG4(r), ARG5(r));
+#ifndef WINDOWS
+  // LINUX
+  printf("Callno %lld (%llx, %llx, %llx, %llx, %llx, %llx)\n", CALLNO(r),
+        ARG0(r), ARG1(r), ARG2(r), ARG3(r), ARG4(r), ARG5(r));
+#else
+  // Windows
+  printf("Callno %lld (%llx, %llx, %llx, %llx)\n", CALLNO(r),
+        r.r10, r.rdx, r.r8, r.r9);
+#endif
+}
+
+
+void dump_sc_with_stack(asid_details* a, struct kvm_regs r) {
+  dump_sc(r);
+  // Dump stack too!
+  unsigned long int *stack;
+  stack = (unsigned long int*)memread(a, r.rsp, nullptr);
+#ifdef WINDOWS
+  for (int i=0; i < 10; i++) {
+#else
+    if (0) { // TODO linux stack based logging
+      int i = 0;
+#endif
+    printf("\t - Stack[%d] = %lx\n", i, stack[i]);
+  }
 }
 
 void dump_regs(struct kvm_regs r) {

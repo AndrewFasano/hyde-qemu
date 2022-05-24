@@ -346,9 +346,34 @@ __u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
       // a UNICODE_STRING struct with a value that starts with
       // '\\registry\\machine\\SYSTEM\\CurrentControlSet\\Services\\' and has Type=1
       // XXX Might not even read pointer if process doesn't have permissions to load drivers?
-      build_syscall(sc, 0x0105, gva);
+      //build_syscall(sc, 0x0105, gva);
+
+
       // NtUnmapViewOfSection - Will it work with invalid handle?
-      //build_syscall(sc, 0x002a, 0, gva);
+      //build_syscall(sc, 0x002a, 0, gva); // this just doesn't ever work?
+
+
+      /* NtReadVirtualMemory
+      IN HANDLE               ProcessHandle,
+      IN PVOID                BaseAddress,
+      OUT PVOID               Buffer,
+      IN ULONG                NumberOfBytesToRead,
+      OUT PULONG              NumberOfBytesReaded OPTIONAL
+      */
+      //build_syscall(sc, 0x3f,
+      //    -1, // HANDLE = self (-1)
+      //    gva, // Pointer to guest buffer
+      //    0,   // Out buffer is NULL
+      //    100);  // Num bytes to read is 0
+
+      // NtLoadKey - Works well, except when it returns STATUS_PRIVILEGE_NOT_HELD
+      // because process lacks SE_RESTORE_PRIVILEGE - frequently...
+      //build_syscall(sc, 0x0107, gva, gva);
+
+      // NtDeleteFile - This is scary, what if the buffer somehow
+      // was of the right format to get deleted?
+      build_syscall(sc, 0x00d2, gva);
+
 #else
       build_syscall(sc, __NR_access, gva, 0);
 #endif

@@ -103,6 +103,23 @@ void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long
 #define TOKENPASTE(x, y) x ## y
 #define TOKENPASTE2(x, y) TOKENPASTE(x, y)
 #define __scratchvar(x) TOKENPASTE2(x, __LINE__ )
+
+#ifdef DEBUG
+#define __memread_status(out, r, ptr, success) do { \
+    *success = false; \
+    hsyscall __scratchvar(sc); \
+    out = (__typeof__(out)) memread(r, (__u64)ptr, &__scratchvar(sc)); \
+    if ((__u64)out == (__u64)-1) { \
+      printf("Failed to read %lx - inject a syscall\n", (unsigned long)ptr); \
+      co_yield __scratchvar(sc); \
+      printf("SC returns 0x%lx\n", r->retval); \
+      out = (__typeof__(out)) memread(r, (__u64)ptr, nullptr); \
+      if ((__u64)out != (__u64)-1) { \
+        *success = true;\
+      } \
+    } else { *success = true; } \
+  } while (0)
+#else
 #define __memread_status(out, r, ptr, success) do { \
     *success = false; \
     hsyscall __scratchvar(sc); \
@@ -115,6 +132,8 @@ void build_syscall(hsyscall*, unsigned int, int unsigned long, int unsigned long
       } \
     } else { *success = true; } \
   } while (0)
+
+#endif
 
 #define __memread(out, r, ptr) do { \
     hsyscall __scratchvar(sc); \

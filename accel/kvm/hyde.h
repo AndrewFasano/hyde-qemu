@@ -5,9 +5,10 @@
 #include <exception>
 #include <linux/kvm.h>
 #include <cassert>
+#include <functional>
 
 //#define DEBUG
-#define WINDOWS
+//#define WINDOWS
 
 //rax callno, args in RDI, RSX, RDX, R10, R8, R9
 #define CALLNO(s) (s).rax
@@ -82,6 +83,7 @@ typedef struct {
   //bool finished;
   unsigned long custom_return;
   bool modify_original_args;
+  std::function<void(struct kvm_regs*)> *modify_on_ret;
   hsyscall scratch;
 } asid_details;
 

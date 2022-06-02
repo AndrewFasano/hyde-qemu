@@ -60,6 +60,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
         a->skip = false;
         //a->finished = false;
         a->modify_original_args = false;
+        a->modify_on_ret = NULL;
         a->custom_return = 0;
 
         // Get & store original registers before we run the coopter's first iteration
@@ -200,9 +201,12 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     // At this point, the original syscall is about to be issued (any prior changes
     // were cleaned up in the last sysret). If the co-opter wishes to change the
     // current syscall, it would have indicated by setting modify_original_args
-    // and changing orig_args
-		a->coopter.destroy();
-		active_details.erase(asid);
+    // and changing orig_args. If the current co-opter wishes to make changes *after*
+    // the syscall returns, it should set modify_on_ret to a function pointer
+    if (a->modify_on_ret == NULL) {
+      a->coopter.destroy();
+      active_details.erase(asid);
+    }
     //a->finished = true;
 #ifdef DEBUG
     printf("In asid %lx @ %lx ]] allow original syscall %llx\n", asid, pc, CALLNO(a->orig_regs));
@@ -226,7 +230,7 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   if (a->skip) {
     // We skipped the original syscall, replacing it with a getuid / NtYieldExec
     // let's clean up by restoring orig_regs with the *pc after syscall*
-    // (it's just `pc`, not decremented like we normally do) Note that we
+    // (it's just `pc`, not decremented like we normally do). Note that we
     // *won't* hit the sysenter case again for this (asid,syscall) because
     // there's no revert. So we clean it all up here and don't bother with .finished
     if (a->custom_return == 0){
@@ -239,9 +243,9 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
 		a->coopter.destroy();
 		active_details.erase(asid);
     return;
-  }else if (!a->coopter.done()) {
+  } else if (!a->coopter.done()) {
     // If it's not finished, we'll go back to the original PC
-
+    assert(a->modify_on_ret == NULL);
     a->orig_regs.rip = pc-2; // Take it back now, y'all
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
 #ifdef DEBUG
@@ -253,6 +257,27 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
     // this would happen if we injected with > 4 args and skip
     printf("\tCo-opter done\n");
 #endif
+  }
+
+  if (a->modify_on_ret != NULL) {
+    // We have a closure for modifying registers on return
+    // First we get the registers, then we call the function
+    // and set the registers back (since it can modify).
+    struct kvm_regs current;
+    assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &current) == 0);
+    //printf("In sysret with modify on_ret with RAX=%llx Would have returned to %lx\n", current.rax, pc);
+
+    (*a->modify_on_ret)(&current);
+    a->modify_on_ret = NULL;
+    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &current) == 0);
+
+    //printf("Actually returning to %llx with RAX=%llx\n", current.rip, current.rax);
+    //assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
+
+    // Finally, we destroy the coopter
+    a->coopter.destroy();
+    active_details.erase(asid);
+    return; // Don't store retval?
   }
 
   // Store retval then and advance generator - note its return (the next syscall to inject) won't be

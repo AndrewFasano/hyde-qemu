@@ -6,26 +6,88 @@
 #include <asm/unistd.h> // Syscall numbers
 #include <cassert>
 #include <cstring>
+#include <dlfcn.h>
 #include <linux/kvm.h>
 #include <map>
+#include <stdarg.h>
 #include <stdio.h>
 #include <vector>
-#include <dlfcn.h>
+
 #include "qemu/compiler.h"
 #include "hyde.h"
 #include "hyde_internal.h"
 
-extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc) {
-  asid_details *a = NULL;
-  struct kvm_regs r;
+void dprintf(const char *fmt, ...) {
+#ifdef DEBUG
+    va_list ap;
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+#endif
+}
 
+void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig) {
+    struct kvm_regs r;
+    memcpy(&r, orig, sizeof(struct kvm_regs));
+    set_CALLNO(r, sysc->callno); // callno is always RAX
+                                  // Arguments vary by OS
+
+    //dprintf("Applying syscall to registers:");
+    //dump_syscall(*sysc);
+
+
+#ifdef WINDOWS
+    if (sysc->nargs > 0) r.r10 = sysc->args[0];
+    if (sysc->nargs > 1) r.rdx = sysc->args[1];
+    if (sysc->nargs > 2) r.r8  = sysc->args[2];
+    if (sysc->nargs > 3) r.r9  = sysc->args[3];
+#define N_STACK 4
+
+#else
+    if (sysc->nargs > 0) set_ARG0(r, sysc->args[0]);
+    if (sysc->nargs > 1) set_ARG1(r, sysc->args[1]);
+    if (sysc->nargs > 2) set_ARG2(r, sysc->args[2]);
+    if (sysc->nargs > 3) set_ARG3(r, sysc->args[3]);
+    if (sysc->nargs > 4) set_ARG4(r, sysc->args[4]);
+    if (sysc->nargs > 5) set_ARG5(r, sysc->args[5]);
+#define N_STACK 6
+#endif
+
+    // TODO: test and debug this - what linux syscall has > 6 args?
+    if (sysc->nargs > N_STACK) {
+      assert(0); // TODO test
+      unsigned long int *stack;
+
+      // XXX: Do we need to unshift later? I don't think so, because we restore regs on ret
+      // Above top of stack can have a redzone of 128 bytes - skip that much then add space for args
+      r.rsp -= 0x80; // Fixed size of redzone
+      r.rsp -= 0x8 * (sysc->nargs - 4);
+      printf("Sub'd RSP 0x88: %llx\n", r.rsp);
+
+      // Note this could fail - no easy way to inject a syscall from in this fn
+      stack = (unsigned long int*)memread(details, r.rsp, nullptr);
+      assert((__u64)stack != (__u64)-1 && "whoops: failed to read stack during injection");
+
+      for (size_t i=4; i < sysc->nargs; i++) {
+        printf("\tstack[%ld] = arg[%ld] = %lx\n", sysc->nargs-i, i, sysc->args[i]);
+        stack[(sysc->nargs + 4)-i] = sysc->args[i];
+      }
+    }
+    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &r) == 0);
+
+    //printf("After application, registers are:\n");
+    //dump_regs(r);
+}
+
+
+bool is_syscall_targetable(int callno, unsigned long asid) {
 #ifndef WINDOWS
   // Linux specific: avoid sigreturn and seccomp'd processes
 
   if (callno == 15 || callno == __NR_rt_sigreturn) { // 15 is sigreturn
     // We should never interfere with these, even if we're co-opting a process
     // Note these do not return so we only have to worry about them here
-    return;
+    return false;
   }
 
   if (callno == 317) { // sys_seccomp
@@ -37,252 +99,191 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
       // An asid we've been avoiding is quitting - remove from our avoid list
       did_seccomp.erase(asid);
     }
+    return false;
+  }
+#endif
+  return true;
+}
+
+asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid) {
+  asid_details *a = NULL;
+  struct kvm_regs r;
+  for (coopter_f* coopter : coopters) {
+    create_coopt_t *f = (*coopter)(cpu, callno);
+    if (f != NULL) {
+      dprintf("\n----------\n\nCREATE coopter in %lx\n", asid);
+      // A should_coopt function has returned non-null, set this asid
+      // up to be coopted by the coopter generator which it returned
+      a = new asid_details;
+      active_details[asid] = a;
+      a->cpu = cpu;
+      a->asid = asid;
+      a->skip = false;
+
+      // Get & store original registers before we run the coopter's first iteration
+      assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
+      //dump_regs(r);
+      memcpy(&a->orig_regs, &r, sizeof(struct kvm_regs));
+
+      a->orig_syscall = new hsyscall;
+      a->orig_syscall->nargs = 6;
+      a->orig_syscall->callno = CALLNO(r);
+      a->orig_syscall->args[0] = ARG0(r);
+      a->orig_syscall->args[1] = ARG1(r);
+      a->orig_syscall->args[2] = ARG2(r);
+      a->orig_syscall->args[3] = ARG3(r);
+      a->orig_syscall->args[4] = ARG4(r);
+      a->orig_syscall->args[5] = ARG5(r);
+      a->orig_syscall->has_retval = false;
+
+      //dprintf("Co-opter starts from: ");
+      //dump_syscall(*a->orig_syscall);
+
+
+      // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
+      // The value we get in rflags won't match the value that emulate_syscall is putting
+      // into rflags - so we compute it ourselves
+      //a->orig_regs.rflags = (a->orig_regs.r11 & 0x3c7fd7) | 0x2;
+      // XXX: Why don't we need/want that anymore?
+
+      // XXX: this *runs* the coopter function up until its first co_yield/co_ret
+      dprintf("Start running coopter:\n");
+      a->coopter = (*f)(active_details[asid]).h_;
+      dprintf("\t[End of first step]\n");
+      return a;
+    }
+  }
+
+  return NULL;
+}
+
+extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc) {
+  asid_details *a = NULL;
+  bool first = false;
+
+  if (!is_syscall_targetable(callno, asid)) {
     return;
   }
-#endif
 
   if (!active_details.contains(asid)) {
-    // No co-opter for the current asid. Check with all registered coopters to see if any
-    // want to start on this syscall.
-    bool match = false;
-    for (coopter_f* coopter : coopters) {
-      create_coopt_t *f = (*coopter)(cpu, callno);
-      if (f != NULL) {
-#ifdef DEBUG
-        printf("\n----------\n\nCREATE coopter in %lx\n", asid);
-#endif
-        // A should_coopt function has returned non-null, set this asid
-        // up to be coopted by the coopter generator which it returned
-        a = new asid_details;
-        active_details[asid] = a;
-        a->cpu = cpu;
-        a->asid = asid;
-        a->skip = false;
-        //a->finished = false;
-        a->modify_original_args = false;
-        a->modify_on_ret = NULL;
-        a->custom_return = 0;
-
-        // Get & store original registers before we run the coopter's first iteration
-        assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
-        memcpy(&a->orig_regs, &r, sizeof(r));
-        // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
-        // The value we get in rflags won't match the value that emulate_syscall is putting
-        // into rflags - so we compute it ourselves
-        a->orig_regs.rflags = (a->orig_regs.r11 & 0x3c7fd7) | 0x2;
-
-        // XXX: this *runs* the coopter function up until its first co_yield/co_ret
-        a->coopter = (*f)(active_details[asid]).h_;
-        match = true;
-        break;
-      }
-    }
-    if (!match) {
-      // No active co-opter for this asid, and none wanted to start so let's leave it alone
+    // No active co-opter for asid - check to see if any want to start
+    // If we find one, we initialize it, running to the first yield/ret
+    a = find_and_init_coopter(cpu, callno, asid);
+    if (a == NULL) {
       return; 
     }
+    first = true;
   } else {
-    // We have a co-opter for this asid. Let's advance it here!
+    // We already have a co-opter for this asid, it should have been
+    // advanced on the last syscall return
     a = active_details.at(asid);
- 
-    // Set orig regs so co-opter can see them
-    assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
-    memcpy(&a->orig_regs, &r, sizeof(r));
-    a->orig_regs.rflags = (a->orig_regs.r11 & 0x3c7fd7) | 0x2; // See comment above
 
-    // Now advance co-opter. If it yields, we inject below
-    a->coopter();
+    // No value in fetching regs again, they're the same
+    //struct kvm_regs tmp;
+    //assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &tmp) == 0);
+    //assert(memcmp(&tmp, &a->orig_regs, sizeof(struct kvm_regs)) == 0);
   }
 
-  // By here `a` should always be set, otherwise we returned
-  assert(a != NULL);
+  dprintf("Syscall in active %lx: callno: %ld\n", asid, callno);
 
-  // The co-opter has run (either from init or in the last sysret) up to a yield/ret
-  if (a->modify_original_args) {
-    // If it wanted to modify original registers (i.e., it's *not* injecting a syscall)
-    // then we set registers to whatever it stored (i.e., modified) in orig_regs
-    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
-  }
+  // In general, we'll store the original syscall and require the *user*
+  // to run it when they want it to happen (e.g., start or end)
+  // Original syscall will be mutable.
 
   hsyscall sysc;
   sysc.nargs = (unsigned int)-1;
-  if (a->skip) {
-    // We "skip" by running a no-op and cleaning up on return
-    // because we've already run the `syscall` instruction
-    // and we want to run the corresponding `sysret` to clean it up
-    // instead of trying to do that all from here.
-#ifdef WINDOWS
-    sysc.nargs = 0; // NtTestAlert - Probably want to find a better no-o
-    sysc.callno = 0x01c0;
-#else
-    sysc.nargs = 0;
-    sysc.callno = __NR_getuid;
-#endif
-    // On return, we'll restore orig_regs - caller who requested the skip should modify those
+  auto &promise = a->coopter.promise();
 
-  } else {
-    auto &promise = a->coopter.promise();
-    if (!a->coopter.done()) {
-      // The coopter yielded a syscall
-      sysc = promise.value_;
-    }else{
-      // The coopter returned - leave sysc with nargs=-1
-    }
-  }
+  if (!a->coopter.done()) {
+    // We have something to inject
+    sysc = promise.value_;
+    //dprintf("We have something to inject in %lx at PC %lx:\n\t", asid, pc);
+    //dump_syscall(sysc);
 
-  if (sysc.nargs != (unsigned int)-1) {
-    // Coopter yielded a syscall which we have in sysc.
-    // Now update registers (r) such that the syscall is run
-    set_CALLNO(r, sysc.callno); // callno is always RAX
-                                // Arguments vary by OS
-#ifdef WINDOWS
-    if (sysc.nargs > 0)
-      r.r10 = sysc.args[0];
-    if (sysc.nargs > 1)
-      r.rdx = sysc.args[1];
-    if (sysc.nargs > 2)
-      r.r8 = sysc.args[2];
-    if (sysc.nargs > 3)
-      r.r9 = sysc.args[3];
-
-    if (sysc.nargs > 4) {
-      unsigned long int *stack;
-
-      // XXX: Do we need to unshift later? I don't think so, because we restore regs on ret
-      r.rsp -= 0x38; // TODO: dynamic based on nargs
-
-      // Note this could fail - no easy way to inject a syscall from in this fn
-      stack = (unsigned long int*)memread(a, r.rsp, nullptr);
-      assert((__u64)stack != (__u64)-1 && "whoops: failed to read stack during injection");
-
-      // I have no idea what's on the stack between 0 and 0x28 (up to stack[4]) - assuming it's
-      // all just junk - so we shift RSP far enough that we can write at +0x20 without
-      // any issues
-      if (sysc.nargs > 4) {
-        stack[5] = sysc.args[4];
-        //printf("Set stack[5] to %lx\n", sysc.args[4]);
-      }
-
-      if (sysc.nargs > 5) {
-        stack[6] = sysc.args[5];
-        //printf("Set stack[6] to %lx\n", sysc.args[5]);
-      }
-    }
-#else
-    if (sysc.nargs > 0)
-      set_ARG0(r, sysc.args[0]);
-    if (sysc.nargs > 1)
-      set_ARG1(r, sysc.args[1]);
-    if (sysc.nargs > 2)
-      set_ARG2(r, sysc.args[2]);
-    if (sysc.nargs > 3)
-      set_ARG3(r, sysc.args[3]);
-    if (sysc.nargs > 4)
-      set_ARG4(r, sysc.args[4]);
-    if (sysc.nargs > 5)
-      set_ARG5(r, sysc.args[5]);
-#endif
-
-    //dump_sc_with_stack(a, r); // DEBUG
-
-    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &r) == 0);
-
-    // DEBUG: log clobered registers
-#ifdef DEBUG
-    a->injected_callno = sysc.callno;
-    assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
-    if (!a->skip) {
-      printf("In asid %lx @ %lx △> ", asid, pc);
-      dump_regs(r);
-    }
-#endif
-
-  } else {
-    // At this point, the original syscall is about to be issued (any prior changes
-    // were cleaned up in the last sysret). If the co-opter wishes to change the
-    // current syscall, it would have indicated by setting modify_original_args
-    // and changing orig_args. If the current co-opter wishes to make changes *after*
-    // the syscall returns, it should set modify_on_ret to a function pointer
-    if (a->modify_on_ret == NULL) {
+  } else if (first) {
+    // Nothing to inject and this is the first syscall
+    // so we need to run a skip! We do this with a "no-op" syscall
+    // and hiding the result on return
+    //printf("SKIP0\n");
+    if (!a->orig_syscall->has_retval) {
+      // No-op: user registered a co-opter but it did nothing so we're already done
+      //printf("Warning: co-opter did nothing: ignoring it\n");
       a->coopter.destroy();
       active_details.erase(asid);
+      return;
     }
-    //a->finished = true;
-#ifdef DEBUG
-    printf("In asid %lx @ %lx ]] allow original syscall %llx\n", asid, pc, CALLNO(a->orig_regs));
-#endif
-	}
+    sysc.nargs = 0;
+    sysc.callno = SKIP_SYSNO;
+    sysc.has_retval = true;
+    sysc.retval = a->orig_syscall->retval;
+    dprintf("Skip original syscall (was %d) in %lx at %lx using new syscall %d and then set RV to %x\n", a->orig_syscall->callno, asid, pc, sysc.callno, a->orig_syscall->retval);
+
+  } else {
+    assert(0); // This should never happen - if it isn't the first one
+               // we would have bailed on the last return if we didn't have more
+    return;
+  }
+
+  set_regs_to_syscall(a, cpu, &sysc, &a->orig_regs);
+
+  // If it's a non-returning syscall(?) we can't catch it on return - clean up now.
+  // Note this means a users can't inject one of these in the middle of a co-opter
+  if (sysc.callno == __NR_execve || sysc.callno == __NR_exit) { // XXX: others? fork/kill?
+    dprintf("Injecting non-returning syscall: no longer tracing %lx\n", asid);
+    a->coopter.destroy();
+    active_details.erase(asid);
+  }
 }
 
-extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long unsigned int pc) {
+extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid,
+                          long unsigned int pc) {
   if (!active_details.contains(asid)) {
     return;
   }
-  asid_details * a = active_details.at(asid);
+  asid_details *details = active_details.at(asid);
 
-  // We co-opted this syscall - store it's retval and reset state!
-#ifdef DEBUG
-  printf("In asid %lx @ %lx << return from coopted syscall. Original was %lld, injected was %d, returns %lx\n",
-      asid, pc,
-      CALLNO(a->orig_regs), a->injected_callno, retval);
-#endif
-
-  if (a->skip) {
-    // We skipped the original syscall, replacing it with a getuid / NtYieldExec
-    // let's clean up by restoring orig_regs with the *pc after syscall*
-    // (it's just `pc`, not decremented like we normally do). Note that we
-    // *won't* hit the sysenter case again for this (asid,syscall) because
-    // there's no revert. So we clean it all up here and don't bother with .finished
-    if (a->custom_return == 0){
-      a->orig_regs.rip = pc;
-    }else{
-      // A capability can specify a custom return address if it wishes
-      a->orig_regs.rip = a->custom_return;
-    }
-    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
-		a->coopter.destroy();
-		active_details.erase(asid);
-    return;
-  } else if (!a->coopter.done()) {
-    // If it's not finished, we'll go back to the original PC
-    assert(a->modify_on_ret == NULL);
-    a->orig_regs.rip = pc-2; // Take it back now, y'all
-    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
-#ifdef DEBUG
-    printf("\tRevert to PC %lx with registers:\n", pc-2);
-    dump_regs(a->orig_regs);
+  // Did we run a skip function? (i.e., not from a co-opter?) if so, do nothing.
+  // Otherwise: update retval and increment the co-opter
+  //if (!details->orig_syscall->has_retval) {
+  if (details->orig_syscall->has_retval) {
+    dprintf("\nReturn from skip in %lx with rv=%lx\n", asid, retval);
   } else {
-    // Finished and it doesn't want to skip
-    // XXX: what if we shifted RSP in the last syscall we injected? TODO XXX need to handle
-    // this would happen if we injected with > 4 args and skip
-    printf("\tCo-opter done\n");
+    details->retval = retval;
+    dprintf("Return from injected syscall in %lx with rv=%lx. Advance coopter:\n", asid, retval);
+    details->coopter(); // Advance - will have access to the just returned value
+    dprintf("\t[End of subsequent step]\n");
+  }
+
+  struct kvm_regs new_regs;
+  memcpy(&new_regs, &details->orig_regs, sizeof(struct kvm_regs));
+
+  if (details->coopter.done()) {
+    // Co-opter is done. Clean up time
+#ifdef DEBUG
+    struct kvm_regs oldregs;
+    getregs(details, &oldregs);
+    dprintf("\tCoopter done, last sc returned %x return to %lx\n", oldregs.rax, pc);
 #endif
-  }
 
-  if (a->modify_on_ret != NULL) {
-    // We have a closure for modifying registers on return
-    // First we get the registers, then we call the function
-    // and set the registers back (since it can modify).
-    struct kvm_regs current;
-    assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &current) == 0);
-    //printf("In sysret with modify on_ret with RAX=%llx Would have returned to %lx\n", current.rax, pc);
+    if (details->orig_syscall->has_retval) {
+      new_regs.rax = details->orig_syscall->retval;
+      dprintf("Change return to be %x\n", details->orig_syscall->retval);
+    }
 
-    (*a->modify_on_ret)(&current);
-    a->modify_on_ret = NULL;
-    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &current) == 0);
+    new_regs.rip = pc; // XXX we *do* need to explicitly set this to
+                       // return back to userspace, otherwise rip is
+                       // the LSTAR value, not the next userspace insn.
+                       // I assume this is because of a delay with KVM updating
+                       // registers, not because there's more to do in the LSTAR
+                       // kernel code.
 
-    //printf("Actually returning to %llx with RAX=%llx\n", current.rip, current.rax);
-    //assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &a->orig_regs) == 0);
-
-    // Finally, we destroy the coopter
-    a->coopter.destroy();
+    details->coopter.destroy();
     active_details.erase(asid);
-    return; // Don't store retval?
+  } else {
+    dprintf("Not done - go back to %lx\n", pc-2);
+    new_regs.rip = pc-2; // Take it back now, y'all
   }
-
-  // Store retval then and advance generator - note its return (the next syscall to inject) won't be
-  // consumed until the next syscall.
-  a->retval = retval;
+  assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &new_regs) == 0);
 }
 
 bool try_load_coopter(char* path) {

@@ -10,6 +10,11 @@
 //#define DEBUG
 //#define WINDOWS
 
+#ifdef WINDOWS
+#define SKIP_SYSNO 0x01c0 // NtTestAlert - Probably need a better one
+#else
+#define SKIP_SYSNO __NR_getpid
+#endif
 //rax callno, args in RDI, RSX, RDX, R10, R8, R9
 #define CALLNO(s) (s).rax
 #define ARG0(s) (s).rdi
@@ -27,19 +32,21 @@
                         (i == 5) ? ARG5(s) : \
                          -1)
 
-#define set_CALLNO(s, x) s.rax =x
-#define set_ARG0(s, x) s.rdi =x
-#define set_ARG1(s, x) s.rsi =x
-#define set_ARG2(s, x) s.rdx =x
-#define set_ARG3(s, x) s.r10 =x
-#define set_ARG4(s, x) s.r8  =x
-#define set_ARG5(s, x) s.r9  =x
-#define set_RET(s, x) s.rax  =x
+#define set_CALLNO(s, x) (s).rax =x
+#define set_ARG0(s, x)   (s).rdi =x
+#define set_ARG1(s, x)   (s).rsi =x
+#define set_ARG2(s, x)   (s).rdx =x
+#define set_ARG3(s, x)   (s).r10 =x
+#define set_ARG4(s, x)   (s).r8  =x
+#define set_ARG5(s, x)   (s).r9  =x
+#define set_RET(s, x)    (s).rax  =x
 
 typedef struct {
   unsigned int callno;
   unsigned long args[6];
   unsigned int nargs;
+  unsigned int retval; // Only used when co-opting
+  bool has_retval;
 } hsyscall;
 
 // Co-routine classes based off https://www.scs.stanford.edu/~dm/blog/c++-coroutines.html
@@ -70,9 +77,12 @@ struct SyscCoroutine {
 
 typedef std::coroutine_handle<SyscCoroutine::promise_type> coopter_t;
  
-typedef struct {
+#define on_ret_t void(_asid_details*, void*, unsigned long, unsigned long, unsigned long)
+
+typedef struct _asid_details {
   coopter_t coopter;
   struct kvm_regs orig_regs;
+  hsyscall *orig_syscall;
   void* cpu;
   long unsigned int retval;
 #ifdef DEBUG
@@ -84,8 +94,22 @@ typedef struct {
   unsigned long custom_return;
   bool modify_original_args;
   std::function<void(struct kvm_regs*)> *modify_on_ret;
+
+  std::function<on_ret_t> *on_ret;
   hsyscall scratch;
 } asid_details;
+
+void dump_syscall(hsyscall h) {
+  printf("syscall_%d(", h.callno);
+  for (size_t i=0; i < h.nargs; i++) {
+    printf("%#lx", h.args[i]);
+    if ((i+1) < h.nargs) printf(", ");
+  }
+  printf(")\n");
+}
+
+void default_on_ret(asid_details* a, void* cpu, unsigned long, unsigned long, unsigned long);
+void skip_on_ret(asid_details* a, void* cpu, unsigned long pc, unsigned long asid, unsigned long retval);
 
 __u64 memread(asid_details*, __u64, hsyscall*);
 __u64 translate(void *cpu, __u64 gva, int* status);
@@ -189,9 +213,10 @@ void dump_sc_with_stack(asid_details* a, struct kvm_regs r) {
 void dump_regs(struct kvm_regs r) {
   printf("PC: %016llx    RAX: %016llx    RBX %016llx    RCX %016llx    RDX %016llx   RSI %016llx   RDI %016llx   RSP %016llx\n",
       r.rip, r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rsp);
-  //printf("\t RBP: %016llx    R8 %016llx    R9 %016llx    R10 %016llx    R11 %016llx    R12 %016llx    R13 %016llx\n", r.rbp, r.r8, r.r9, r.r10, r.r11, r.r12, r.r13);
-  //printf("\t R14: %016llx    R15: %016llx    RFLAGS %016llx\n", r.r14, r.r15, r.rflags);
+  printf("\t RBP: %016llx    R8 %016llx    R9 %016llx    R10 %016llx    R11 %016llx    R12 %016llx    R13 %016llx\n", r.rbp, r.r8, r.r9, r.r10, r.r11, r.r12, r.r13);
+  printf("\t R14: %016llx    R15: %016llx    RFLAGS %016llx\n", r.r14, r.r15, r.rflags);
 }
+
 
 // create_coopt_t type takes in asid_details*, returns SysCoroutine
 typedef SyscCoroutine(create_coopt_t)(asid_details*);

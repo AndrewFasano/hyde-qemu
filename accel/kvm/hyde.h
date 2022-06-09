@@ -220,12 +220,12 @@ void dump_regs(struct kvm_regs r) {
 
 // create_coopt_t type takes in asid_details*, returns SysCoroutine
 typedef SyscCoroutine(create_coopt_t)(asid_details*);
-typedef create_coopt_t*(coopter_f)(void*, long unsigned_int);
+typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int);
 
 // Function *a capability must provide* -  extern C to avoid mangling
 // Returns a pointer to a local (extern C) coroutine function if the syscall should be co-opted, otherwise NULL
 extern "C" {
-  create_coopt_t* should_coopt(void*cpu, long unsigned int callno);
+  create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc);
 }
 
 #endif

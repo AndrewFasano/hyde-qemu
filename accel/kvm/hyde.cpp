@@ -105,11 +105,11 @@ bool is_syscall_targetable(int callno, unsigned long asid) {
   return true;
 }
 
-asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid) {
+asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, unsigned long pc) {
   asid_details *a = NULL;
   struct kvm_regs r;
   for (coopter_f* coopter : coopters) {
-    create_coopt_t *f = (*coopter)(cpu, callno);
+    create_coopt_t *f = (*coopter)(cpu, callno, pc);
     if (f != NULL) {
       dprintf("\n----------\n\nCREATE coopter in %lx\n", asid);
       // A should_coopt function has returned non-null, set this asid
@@ -119,6 +119,7 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid) {
       a->cpu = cpu;
       a->asid = asid;
       a->skip = false;
+      a->custom_return = 0;
 
       // Get & store original registers before we run the coopter's first iteration
       assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
@@ -168,7 +169,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   if (!active_details.contains(asid)) {
     // No active co-opter for asid - check to see if any want to start
     // If we find one, we initialize it, running to the first yield/ret
-    a = find_and_init_coopter(cpu, callno, asid);
+    a = find_and_init_coopter(cpu, callno, asid, (unsigned long)pc);
     if (a == NULL) {
       return; 
     }
@@ -244,7 +245,6 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
 
   // Did we run a skip function? (i.e., not from a co-opter?) if so, do nothing.
   // Otherwise: update retval and increment the co-opter
-  //if (!details->orig_syscall->has_retval) {
   if (details->orig_syscall->has_retval) {
     dprintf("\nReturn from skip in %lx with rv=%lx\n", asid, retval);
   } else {
@@ -270,12 +270,16 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
       dprintf("Change return to be %x\n", details->orig_syscall->retval);
     }
 
-    new_regs.rip = pc; // XXX we *do* need to explicitly set this to
-                       // return back to userspace, otherwise rip is
-                       // the LSTAR value, not the next userspace insn.
-                       // I assume this is because of a delay with KVM updating
-                       // registers, not because there's more to do in the LSTAR
-                       // kernel code.
+    if (details->custom_return != 0) {
+      new_regs.rip = details->custom_return;
+    } else {
+      new_regs.rip = pc; // XXX we *do* need to explicitly set this to
+                         // return back to userspace, otherwise rip is
+                         // the LSTAR value, not the next userspace insn.
+                         // I assume this is because of a delay with KVM updating
+                         // registers, not because there's more to do in the LSTAR
+                         // kernel code.
+      }
 
     details->coopter.destroy();
     active_details.erase(asid);

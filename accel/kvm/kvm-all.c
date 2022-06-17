@@ -2912,7 +2912,10 @@ int kvm_cpu_exec(CPUState *cpu)
           {
             bool is_syscall = run->papr_hcall.args[2] == 1;
             if (is_syscall) {
-              on_syscall((void*)cpu, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0]);
+              on_syscall((void*)cpu, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0],
+                  run->papr_hcall.args[3], /* orig_rcx */
+                  run->papr_hcall.args[4] /* orig_r11 */
+                  );
             }else{
               // Sysret
               on_sysret((void*)cpu, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0]);

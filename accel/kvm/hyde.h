@@ -64,10 +64,13 @@ struct SyscCoroutine {
     std::suspend_never initial_suspend() { return {}; }
     std::suspend_always final_suspend() noexcept { return {}; }
     void unhandled_exception() {}
+
+    // Regular yield, returns an hsyscall value
     std::suspend_always yield_value(hsyscall value) {
       value_ = value;
       return {};
     }
+
     void return_void() {}
 
   };
@@ -89,8 +92,9 @@ typedef struct _asid_details {
   unsigned int injected_callno; // Debug only
 #endif
   unsigned int asid;
-  bool skip;
-  //bool finished;
+  unsigned long int orig_rcx;
+  unsigned long int orig_r11;
+  bool use_orig_regs; // If set, after sysret we'll restore RCX/R11 to their pre-syscall values
   unsigned long custom_return;
   bool modify_original_args;
   std::function<void(struct kvm_regs*)> *modify_on_ret;
@@ -220,12 +224,12 @@ void dump_regs(struct kvm_regs r) {
 
 // create_coopt_t type takes in asid_details*, returns SysCoroutine
 typedef SyscCoroutine(create_coopt_t)(asid_details*);
-typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int);
+typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int, unsigned int);
 
 // Function *a capability must provide* -  extern C to avoid mangling
 // Returns a pointer to a local (extern C) coroutine function if the syscall should be co-opted, otherwise NULL
 extern "C" {
-  create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc);
+  create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc, unsigned int asid);
 }
 
 #endif

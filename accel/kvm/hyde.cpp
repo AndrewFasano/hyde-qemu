@@ -54,8 +54,9 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
 #endif
 
     // TODO: test and debug this - what linux syscall has > 6 args?
-    if (sysc->nargs > N_STACK) {
-      assert(0); // TODO test
+		if (sysc->nargs > N_STACK) {
+			printf("Syscall has %d args, > max %d\n", sysc->nargs, N_STACK);
+      assert(0 && "untested"); // TODO test
       unsigned long int *stack;
 
       // XXX: Do we need to unshift later? I don't think so, because we restore regs on ret
@@ -109,17 +110,18 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
   asid_details *a = NULL;
   struct kvm_regs r;
   for (coopter_f* coopter : coopters) {
-    create_coopt_t *f = (*coopter)(cpu, callno, pc);
+    create_coopt_t *f = (*coopter)(cpu, callno, pc, asid);
     if (f != NULL) {
       dprintf("\n----------\n\nCREATE coopter in %lx\n", asid);
       // A should_coopt function has returned non-null, set this asid
       // up to be coopted by the coopter generator which it returned
       a = new asid_details;
+
       active_details[asid] = a;
       a->cpu = cpu;
       a->asid = asid;
-      a->skip = false;
       a->custom_return = 0;
+      a->use_orig_regs = false;
 
       // Get & store original registers before we run the coopter's first iteration
       assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
@@ -158,7 +160,8 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
   return NULL;
 }
 
-extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc) {
+extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc,
+                           long unsigned int orig_rcx, long unsigned int orig_r11) {
   asid_details *a = NULL;
   bool first = false;
 
@@ -173,6 +176,9 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     if (a == NULL) {
       return; 
     }
+    a->orig_rcx = orig_rcx;
+    a->orig_r11 = orig_r11;
+
     first = true;
   } else {
     // We already have a co-opter for this asid, it should have been
@@ -270,6 +276,12 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
       dprintf("Change return to be %x\n", details->orig_syscall->retval);
     }
 
+    if (details->use_orig_regs) {
+      new_regs.rcx = details->orig_rcx;
+      new_regs.r11 = details->orig_r11;
+      /// XXX: eflags is also changed, but that's not so important? Also not sure how to cleanly restore
+    }
+
     if (details->custom_return != 0) {
       new_regs.rip = details->custom_return;
     } else {
@@ -300,7 +312,7 @@ bool try_load_coopter(char* path) {
   coopter_f* do_coopt;
   do_coopt = (coopter_f*)dlsym(handle, "should_coopt");
   if (do_coopt == NULL) {
-    printf("Could not find do_coopt function in capability: %s\n", dlerror());
+    printf("Could not find should_coopt function in capability: %s\n", dlerror());
     return false;
   }
   coopters.push_back(*do_coopt);

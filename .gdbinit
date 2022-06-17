@@ -6,3 +6,4 @@
 
 # Load QEMU-specific sub-commands and settings
 source scripts/qemu-gdb.py
+handle SIGUSR1 noprint nostop

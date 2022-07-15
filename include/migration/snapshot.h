@@ -17,6 +17,8 @@
 
 #include "qapi/qapi-builtin-types.h"
 
+int save_mem_snapshot(const char *filename);
+
 /**
  * save_snapshot: Save an internal snapshot.
  * @name: name of internal snapshot

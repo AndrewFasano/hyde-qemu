@@ -1582,8 +1582,8 @@ int save_mem_snapshot(const char* filename) {
     Error **errp = NULL;
     QIOChannelFile *ioc;
     QEMUFile *f;
-    char* snp_name = (char*)malloc(strlen(filename)+5);
-    snprintf(snp_name, strlen(filename)+5, "%s-snp", filename);
+    char* snp_name = (char*)malloc(strlen(filename)+8);
+    snprintf(snp_name, strlen(filename)+5, "%s-rr-snp", filename);
 
     global_state_store_running();
 
@@ -1593,7 +1593,6 @@ int save_mem_snapshot(const char* filename) {
       free(snp_name);
       return 1;
     }
-    printf("writing snapshot:\t%s\n", snp_name);
 
     // Create channel
     qio_channel_set_name(QIO_CHANNEL(ioc), "panda-save-state");
@@ -1604,8 +1603,6 @@ int save_mem_snapshot(const char* filename) {
     qemu_fflush(f);
     int ret = qemu_file_get_error(f);
     free(snp_name);
-
-
     return ret;
 }
 

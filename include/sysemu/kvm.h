@@ -582,4 +582,19 @@ bool kvm_arch_cpu_check_are_resettable(void);
 bool kvm_dirty_ring_enabled(void);
 
 uint32_t kvm_dirty_ring_size(void);
+/**
+ * kvm_load_hyde_capability
+ *
+ * Returns: true: capability loaded
+ *          false: capability could not be loaded
+ */
+bool kvm_load_hyde_capability(const char*);
+
+/**
+ * kvm_unload_hyde_capability
+ *
+ * Returns: true: capability unloaded
+ *          false: capability could not be unloaded
+ */
+bool kvm_unload_hyde_capability(const char*);
 #endif

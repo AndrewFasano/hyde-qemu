@@ -584,3 +584,43 @@
 { 'event': 'VFU_CLIENT_HANGUP',
   'data': { 'vfu-id': 'str', 'vfu-qom-path': 'str',
             'dev-id': 'str', 'dev-qom-path': 'str' } }
+# @hyde-load:
+#
+# Enable a hyde capability by name
+#
+# @name: "mycap"
+#
+# Returns: nothing on success.
+#
+# Since: 6.1.1
+#
+# Example:
+#
+# -> { "execute": "hyde-load",
+#      "arguments": { "name": "mycap" } }
+# <- { "return": {} }
+#
+##
+{'command': 'hyde-load',
+ 'data': { 'name': 'str' } }
+
+##
+# @hyde-unload:
+#
+# Unload a hyde capability by name
+#
+# @name: "mycap"
+#
+# Returns: nothing on success.
+#
+# Since: 6.1.1
+#
+# Example:
+#
+# -> { "execute": "hyde-unload",
+#      "arguments": { "name": "mycap" } }
+# <- { "return": {} }
+#
+##
+{'command': 'hyde-unload',
+ 'data': { 'name': 'str' } }

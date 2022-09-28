@@ -1795,6 +1795,29 @@ ERST
         .help       = "cancel dirty page rate limit, use cpu_index to cancel"
                       "\n\t\t\t\t\t limit on a specified virtual cpu",
         .cmd        = hmp_cancel_vcpu_dirty_limit,
+``hyde_enable`` *capability_name*
+  Activate a given hyde capability
+ERST
+
+    {
+        .name       = "hyde_enable",
+        .args_type  = "name:s?",
+        .params     = "name",
+        .help       = "enable a HyDE capability",
+        .cmd        = hmp_hyde_enable,
+    },
+
+SRST
+``hyde_disable`` *capability_name*
+  Deactivate a given hyde capability
+ERST
+
+    {
+        .name       = "hyde_disable",
+        .args_type  = "name:s?",
+        .params     = "name",
+        .help       = "disable a HyDE capability",
+        .cmd        = hmp_hyde_disable,
     },
 
 SRST

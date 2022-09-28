@@ -11,6 +11,7 @@
 #include <map>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string>
 #include <vector>
 
 #include "qemu/compiler.h"
@@ -109,10 +110,12 @@ bool is_syscall_targetable(int callno, unsigned long asid) {
 asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, unsigned long pc) {
   asid_details *a = NULL;
   struct kvm_regs r;
-  for (coopter_f* coopter : coopters) {
+  //for (coopter_f* coopter : coopters) {
+  for (const auto &pair : coopters) {
+    coopter_f* coopter = pair.second;
     create_coopt_t *f = (*coopter)(cpu, callno, pc, asid);
     if (f != NULL) {
-      dprintf("\n----------\n\nCREATE coopter in %lx\n", asid);
+      dprintf("\n----------\n\nCREATE coopter for %s in %lx\n", pair.first.c_str(), asid);
       // A should_coopt function has returned non-null, set this asid
       // up to be coopted by the coopter generator which it returned
       a = new asid_details;
@@ -302,11 +305,15 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &new_regs) == 0);
 }
 
-bool try_load_coopter(char* path) {
-  void* handle = dlopen(path, RTLD_LAZY);
+bool try_load_coopter(std::string path) {
+  if (coopters.count(path)) {
+    printf("Already have %s capability loaded\n", path.c_str());
+    return false;
+  }
+  void* handle = dlopen(path.c_str(), RTLD_LAZY);
   if (handle == NULL) {
-    printf("Could not open capability at %s: %s\n", path, dlerror());
-    assert(0);
+    printf("Could not open capability at %s: %s\n", path.c_str(), dlerror());
+    return false;
   }
 
   coopter_f* do_coopt;
@@ -315,13 +322,34 @@ bool try_load_coopter(char* path) {
     printf("Could not find should_coopt function in capability: %s\n", dlerror());
     return false;
   }
-  coopters.push_back(*do_coopt);
+  coopters[path] = *do_coopt;
   return true;
+}
+
+bool try_unload_coopter(std::string path) {
+  if (!coopters.count(path)) {
+    printf("Capability %s has not been loaded\n", path.c_str());
+    for (const auto &pair : coopters) {
+      std::string capability_name = pair.first;
+      printf("But %s has\n", capability_name.c_str());
+    }
+    return false;
+  }
+  coopters.erase(path);
+  return true;
+}
+
+extern "C" bool kvm_load_hyde_capability(const char* path) {
+  return try_load_coopter(std::string(path));
+}
+
+extern "C" bool kvm_unload_hyde_capability(const char* path) {
+  return try_unload_coopter(std::string(path));
 }
 
 extern "C" void hyde_init(void) {
   const char* path = "/home/andrew/hhyde/cap_libs/cap.so";
-  assert(try_load_coopter((char*)path));
+  assert(try_load_coopter(path));
 }
 
 // Gross set of build_syscall functions without vaargs

@@ -607,7 +607,7 @@ void qmp_hyde_load(const char* capname, Error **errp)
     if (!capname) {
         error_setg(errp, "Capability name must be provided");
     } else {
-      kvm_load_hyde_capability(capname);
+      //kvm_load_hyde_capability(capname, current_cpu);
     }
 }
 
@@ -616,6 +616,6 @@ void qmp_hyde_unload(const char* capname, Error **errp)
     if (!capname) {
         error_setg(errp, "Capability name must be provided");
     } else {
-      kvm_unload_hyde_capability(capname);
+      //kvm_unload_hyde_capability(capname, current_cpu);
     }
 }

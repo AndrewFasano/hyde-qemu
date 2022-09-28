@@ -588,7 +588,7 @@ uint32_t kvm_dirty_ring_size(void);
  * Returns: true: capability loaded
  *          false: capability could not be loaded
  */
-bool kvm_load_hyde_capability(const char*);
+bool kvm_load_hyde_capability(const char*, CPUState*);
 
 /**
  * kvm_unload_hyde_capability
@@ -597,4 +597,6 @@ bool kvm_load_hyde_capability(const char*);
  *          false: capability could not be unloaded
  */
 bool kvm_unload_hyde_capability(const char*);
+bool kvm_unload_hyde_capability(const char*, CPUState*);
+
 #endif

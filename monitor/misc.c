@@ -1992,3 +1992,41 @@ void monitor_init_globals(void)
     sortcmdlist();
     qemu_mutex_init(&mon_fdsets_lock);
 }
+
+void hmp_hyde_enable(Monitor *mon, const QDict *qdict)
+{
+    const char* capname = qdict_get_try_str(qdict, "name");
+    Error *err = NULL;
+    if (!capname) {
+        error_setg(&err, "Capability name must be provided");
+    } else {
+      CPUState *cs = mon_get_cpu(mon);
+      if (cs == NULL) {
+        error_setg(&err, "Unable to get CPU");
+      }else{
+        kvm_load_hyde_capability(capname, cs);
+        //qmp_hyde_load(capname, &err);
+      }
+      hmp_handle_error(mon, err);
+    }
+}
+
+void hmp_hyde_disable(Monitor *mon, const QDict *qdict)
+{
+    const char* capname = qdict_get_try_str(qdict, "name");
+    Error *err = NULL;
+
+    if (!capname) {
+        error_setg(&err, "Capability name must be provided");
+    } else {
+      CPUState *cs = mon_get_cpu(mon);
+      if (cs == NULL) {
+        error_setg(&err, "Unable to get CPU");
+      }else{
+        //qmp_hyde_unload(capname, &err);
+        kvm_unload_hyde_capability(capname, cs);
+      }
+      hmp_handle_error(mon, err);
+    }
+    hmp_handle_error(mon, err);
+}

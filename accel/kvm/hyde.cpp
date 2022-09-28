@@ -305,7 +305,17 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &new_regs) == 0);
 }
 
-bool try_load_coopter(std::string path) {
+void enable_syscall_introspection(void* cpu) {
+  assert(cpu != nullptr);
+  assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 1) == 0);
+}
+
+void disable_syscall_introspection(void* cpu) {
+  assert(cpu != nullptr);
+  assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 0) == 0);
+}
+
+bool try_load_coopter(std::string path, void* cpu) {
   if (coopters.count(path)) {
     printf("Already have %s capability loaded\n", path.c_str());
     return false;
@@ -320,13 +330,17 @@ bool try_load_coopter(std::string path) {
   do_coopt = (coopter_f*)dlsym(handle, "should_coopt");
   if (do_coopt == NULL) {
     printf("Could not find should_coopt function in capability: %s\n", dlerror());
+    dlclose(handle);
     return false;
+  }
+  if (coopters.empty()) {
+    enable_syscall_introspection(cpu);
   }
   coopters[path] = *do_coopt;
   return true;
 }
 
-bool try_unload_coopter(std::string path) {
+bool try_unload_coopter(std::string path, void* cpu) {
   if (!coopters.count(path)) {
     printf("Capability %s has not been loaded\n", path.c_str());
     for (const auto &pair : coopters) {
@@ -336,20 +350,23 @@ bool try_unload_coopter(std::string path) {
     return false;
   }
   coopters.erase(path);
+  if (coopters.empty()) {
+    disable_syscall_introspection(cpu);
+  }
   return true;
 }
 
-extern "C" bool kvm_load_hyde_capability(const char* path) {
-  return try_load_coopter(std::string(path));
+extern "C" bool kvm_load_hyde_capability(const char* path, void *cpu) {
+  return try_load_coopter(std::string(path), cpu);
 }
 
-extern "C" bool kvm_unload_hyde_capability(const char* path) {
-  return try_unload_coopter(std::string(path));
+extern "C" bool kvm_unload_hyde_capability(const char* path, void *cpu) {
+  return try_unload_coopter(std::string(path), cpu);
 }
 
 extern "C" void hyde_init(void) {
-  const char* path = "/home/andrew/hhyde/cap_libs/cap.so";
-  assert(try_load_coopter(path));
+  //const char* path = "/home/andrew/hhyde/cap_libs/cap.so";
+  //assert(try_load_coopter(path));
 }
 
 // Gross set of build_syscall functions without vaargs

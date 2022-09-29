@@ -315,10 +315,13 @@ void disable_syscall_introspection(void* cpu) {
   assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 0) == 0);
 }
 
-bool try_load_coopter(std::string path, void* cpu) {
+bool try_load_coopter(std::string path, void* cpu, int idx) {
   if (coopters.count(path)) {
-    printf("Already have %s capability loaded\n", path.c_str());
-    return false;
+    if (idx == 0) {
+      printf("Already have %s capability loaded\n", path.c_str());
+      return false;
+    }
+      return true; // Cap already loaded for 0th CPU
   }
   void* handle = dlopen(path.c_str(), RTLD_LAZY);
   if (handle == NULL) {
@@ -340,14 +343,13 @@ bool try_load_coopter(std::string path, void* cpu) {
   return true;
 }
 
-bool try_unload_coopter(std::string path, void* cpu) {
+bool try_unload_coopter(std::string path, void* cpu, int idx) {
   if (!coopters.count(path)) {
-    printf("Capability %s has not been loaded\n", path.c_str());
-    for (const auto &pair : coopters) {
-      std::string capability_name = pair.first;
-      printf("But %s has\n", capability_name.c_str());
+    if (idx == 0) {
+      printf("Capability %s has not been loaded\n", path.c_str());
+      return false;
     }
-    return false;
+    return true; // Already unloaded for 0th cpu??
   }
   coopters.erase(path);
   if (coopters.empty()) {
@@ -356,12 +358,12 @@ bool try_unload_coopter(std::string path, void* cpu) {
   return true;
 }
 
-extern "C" bool kvm_load_hyde_capability(const char* path, void *cpu) {
-  return try_load_coopter(std::string(path), cpu);
+extern "C" bool kvm_load_hyde_capability(const char* path, void *cpu, int idx) {
+  return try_load_coopter(std::string(path), cpu, idx);
 }
 
-extern "C" bool kvm_unload_hyde_capability(const char* path, void *cpu) {
-  return try_unload_coopter(std::string(path), cpu);
+extern "C" bool kvm_unload_hyde_capability(const char* path, void *cpu, int idx) {
+  return try_unload_coopter(std::string(path), cpu, idx);
 }
 
 extern "C" void hyde_init(void) {

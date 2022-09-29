@@ -2459,31 +2459,6 @@ exit:
     }
 exit_no_print:
     error_free(err);
-
-void hmp_hyde_enable(Monitor *mon, const QDict *qdict)
-{
-    const char* capname = qdict_get_try_str(qdict, "name");
-    Error *err = NULL;
-    if (!capname) {
-        error_setg(&err, "Capability name must be provided");
-    } else {
-      qmp_hyde_load(capname, &err);
-      hmp_handle_error(mon, err);
-    }
-}
-
-void hmp_hyde_disable(Monitor *mon, const QDict *qdict)
-{
-    const char* capname = qdict_get_try_str(qdict, "name");
-    Error *err = NULL;
-
-    if (!capname) {
-        error_setg(&err, "Capability name must be provided");
-    } else {
-      qmp_hyde_unload(capname, &err);
-      hmp_handle_error(mon, err);
-    }
-    hmp_handle_error(mon, err);
 }
 
 static void hmp_virtio_dump_protocols(Monitor *mon,

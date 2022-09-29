@@ -584,6 +584,7 @@
 { 'event': 'VFU_CLIENT_HANGUP',
   'data': { 'vfu-id': 'str', 'vfu-qom-path': 'str',
             'dev-id': 'str', 'dev-qom-path': 'str' } }
+##
 # @hyde-load:
 #
 # Enable a hyde capability by name

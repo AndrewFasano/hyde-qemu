@@ -596,7 +596,6 @@ bool kvm_load_hyde_capability(const char*, CPUState*);
  * Returns: true: capability unloaded
  *          false: capability could not be unloaded
  */
-bool kvm_unload_hyde_capability(const char*);
 bool kvm_unload_hyde_capability(const char*, CPUState*);
 
 #endif

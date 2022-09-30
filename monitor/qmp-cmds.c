@@ -108,6 +108,31 @@ void qmp_system_powerdown(Error **errp)
     qemu_system_powerdown_request();
 }
 
+void qmp_hyde_load(const char* capname, Error **errp)
+{
+    CPUState *cs;
+    if (!capname) {
+        error_setg(errp, "Capability name must be provided");
+    } else {
+        CPU_FOREACH(cs) {
+            kvm_load_hyde_capability(capname, cs, cs->cpu_index);
+        }
+    }
+}
+
+void qmp_hyde_unload(const char* capname, Error **errp)
+{
+    CPUState *cs;
+    if (!capname) {
+        error_setg(errp, "Capability name must be provided");
+    } else {
+        CPU_FOREACH(cs) {
+            kvm_unload_hyde_capability(capname, cs, cs->cpu_index);
+        }
+    }
+ }
+
+
 void qmp_cont(Error **errp)
 {
     BlockBackend *blk;

@@ -5600,6 +5600,15 @@ SRST
             (qemu) qom-set /objects/iothread1 poll-max-ns 100000
 ERST
 
+DEFHEADING()
+
+DEFHEADING(HyDE Configuration:)
+
+DEF("hyde-enable", HAS_ARG, QEMU_OPTION_hyde_enable,
+"-hyde-enable <file>\n"
+"                Load a given hyde capability.\n",
+QEMU_ARCH_ALL)
+
 
 HXCOMM This is the last statement. Insert new options before this line!
 

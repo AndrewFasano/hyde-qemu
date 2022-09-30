@@ -2023,26 +2023,3 @@ void hmp_hyde_disable(Monitor *mon, const QDict *qdict)
     }
     hmp_handle_error(mon, err);
 }
-
-// TODO: We don't want this here, because it's wrong
-// But we also don't want to just include hyde.cpp because that's
-// not a per-arch object. So we need some hyde API layer
-// for enabling/disabling these and then we can let that get in per-arch files?
-void qmp_hyde_load(const char* capname, Error **errp)
-{
-    if (!capname) {
-        error_setg(errp, "Capability name must be provided");
-    } else {
-      //kvm_load_hyde_capability(capname, current_cpu);
-    }
-}
-
-void qmp_hyde_unload(const char* capname, Error **errp)
-{
-    if (!capname) {
-        error_setg(errp, "Capability name must be provided");
-    } else {
-      //kvm_unload_hyde_capability(capname, current_cpu);
-    }
- }
-

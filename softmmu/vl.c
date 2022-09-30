@@ -160,6 +160,7 @@ static const char *cpu_option;
 static const char *mem_path;
 static const char *incoming;
 static const char *loadvm;
+static const char *hyde_cap;
 static const char *accelerators;
 static bool have_custom_ram_size;
 static const char *ram_memdev_id;
@@ -2607,6 +2608,10 @@ void qmp_x_exit_preconfig(Error **errp)
     if (loadvm) {
         load_snapshot(loadvm, NULL, false, NULL, &error_fatal);
     }
+
+    if (hyde_cap) {
+      qmp_hyde_load(hyde_cap, &error_fatal);
+    }
     if (replay_mode != REPLAY_MODE_NONE) {
         replay_vmstate_init();
     }
@@ -3480,6 +3485,9 @@ void qemu_init(int argc, char **argv)
             case QEMU_OPTION_nouserconfig:
                 /* Nothing to be parsed here. Especially, do not error out below. */
                 break;
+            case QEMU_OPTION_hyde_enable:
+              hyde_cap = optarg;
+              break;
             default:
                 if (os_parse_cmd_args(popt->index, optarg)) {
                     error_report("Option not supported in this build");

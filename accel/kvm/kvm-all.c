@@ -2783,6 +2783,10 @@ static __thread int pending_sigbus_code;
 static __thread bool have_sigbus_pending;
 #endif
 
+unsigned long get_cpu_id(CPUState *cpu) {
+  return kvm_arch_vcpu_id(cpu);
+}
+
 static void kvm_cpu_kick(CPUState *cpu)
 {
     qatomic_set(&cpu->kvm_run->immediate_exit, 1);
@@ -3057,6 +3061,26 @@ int kvm_vm_ioctl(KVMState *s, int type, ...)
 
     trace_kvm_vm_ioctl(type, arg);
     ret = ioctl(s->vmfd, type, arg);
+    if (ret == -1) {
+        ret = -errno;
+    }
+    return ret;
+}
+
+int kvm_vcpu_ioctl_pause_vm(CPUState *cpu, int type, ...) {
+  // Pause the guest while we run this IOCTL
+    int ret;
+    void *arg;
+    va_list ap;
+    bool was_running = runstate_is_running();
+
+    va_start(ap, type);
+    arg = va_arg(ap, void *);
+    va_end(ap);
+
+    if (was_running) vm_stop(RUN_STATE_PAUSED);
+    ret = ioctl(cpu->kvm_fd, type, arg);
+    if (was_running) vm_start();
     if (ret == -1) {
         ret = -errno;
     }

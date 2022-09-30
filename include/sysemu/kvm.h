@@ -271,7 +271,9 @@ int kvm_ioctl(KVMState *s, int type, ...);
 
 int kvm_vm_ioctl(KVMState *s, int type, ...);
 
+int kvm_vcpu_ioctl_pause_vm(CPUState *cpu, int type, ...);
 int kvm_vcpu_ioctl(CPUState *cpu, int type, ...);
+unsigned long get_cpu_id(CPUState *cpu);
 
 /**
  * kvm_device_ioctl - call an ioctl on a kvm device

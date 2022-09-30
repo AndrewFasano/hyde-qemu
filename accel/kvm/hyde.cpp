@@ -305,9 +305,9 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &new_regs) == 0);
 }
 
-void enable_syscall_introspection(void* cpu) {
+void enable_syscall_introspection(void* cpu, int idx) {
   assert(cpu != nullptr);
-  assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 1) == 0);
+  assert(kvm_vcpu_ioctl_pause_vm(cpu, KVM_HYDE_TOGGLE, 1) == 0);
 }
 
 void disable_syscall_introspection(void* cpu) {
@@ -337,7 +337,7 @@ bool try_load_coopter(std::string path, void* cpu, int idx) {
     return false;
   }
   if (coopters.empty()) {
-    enable_syscall_introspection(cpu);
+    enable_syscall_introspection(cpu, idx);
   }
   coopters[path] = *do_coopt;
   return true;

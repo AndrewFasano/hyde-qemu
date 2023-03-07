@@ -23,7 +23,7 @@ extern "C" {
 //typedef std::pair<bool(*)(void*, long unsigned int), SyscCoroutine(*)(asid_details*)> coopter_pair;
 
 std::map<std::string, coopter_f*> coopters; // function which returns coroutine or NULL
-std::map<long unsigned int, asid_details*> active_details; // asid->details
+std::map<std::pair<long unsigned int, long unsigned int>, asid_details*> active_details; // (asid,cpuid)->details
 std::set<long unsigned int> did_seccomp;
 
 #endif

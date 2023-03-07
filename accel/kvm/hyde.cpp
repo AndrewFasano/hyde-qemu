@@ -111,16 +111,18 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
   asid_details *a = NULL;
   struct kvm_regs r;
   //for (coopter_f* coopter : coopters) {
-  for (const auto &pair : coopters) {
+  unsigned long cpu_id = get_cpu_id(cpu);
+  for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
     coopter_f* coopter = pair.second;
     create_coopt_t *f = (*coopter)(cpu, callno, pc, asid);
     if (f != NULL) {
-      dprintf("\n----------\n\nCREATE coopter for %s in %lx\n", pair.first.c_str(), asid);
+      //dprintf("\n----------\n\nCREATE coopter for %s in %lx on cpu %ld\n", pair.first.c_str(), asid, cpu_id);
+      //printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
       // A should_coopt function has returned non-null, set this asid
       // up to be coopted by the coopter generator which it returned
       a = new asid_details;
 
-      active_details[asid] = a;
+      active_details[{asid, cpu_id}] = a;
       a->cpu = cpu;
       a->asid = asid;
       a->custom_return = 0;
@@ -142,8 +144,8 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
       a->orig_syscall->args[5] = ARG5(r);
       a->orig_syscall->has_retval = false;
 
-      //dprintf("Co-opter starts from: ");
-      //dump_syscall(*a->orig_syscall);
+      dprintf("Co-opter starts from: ");
+      dump_syscall(*a->orig_syscall);
 
 
       // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
@@ -154,7 +156,7 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
 
       // XXX: this *runs* the coopter function up until its first co_yield/co_ret
       dprintf("Start running coopter:\n");
-      a->coopter = (*f)(active_details[asid]).h_;
+      a->coopter = (*f)(active_details[{asid, cpu_id}]).h_;
       dprintf("\t[End of first step]\n");
       return a;
     }
@@ -171,8 +173,9 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   if (!is_syscall_targetable(callno, asid)) {
     return;
   }
+  unsigned long cpu_id = get_cpu_id(cpu);
 
-  if (!active_details.contains(asid)) {
+  if (!active_details.contains({asid, cpu_id})) {
     // No active co-opter for asid - check to see if any want to start
     // If we find one, we initialize it, running to the first yield/ret
     a = find_and_init_coopter(cpu, callno, asid, (unsigned long)pc);
@@ -186,7 +189,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   } else {
     // We already have a co-opter for this asid, it should have been
     // advanced on the last syscall return
-    a = active_details.at(asid);
+    a = active_details.at({asid, cpu_id});
 
     // No value in fetching regs again, they're the same
     //struct kvm_regs tmp;
@@ -194,7 +197,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     //assert(memcmp(&tmp, &a->orig_regs, sizeof(struct kvm_regs)) == 0);
   }
 
-  dprintf("Syscall in active %lx: callno: %ld\n", asid, callno);
+  //printf("Syscall in active %lx on cpu %ld: callno: %ld\n", asid, cpu_id, callno);
 
   // In general, we'll store the original syscall and require the *user*
   // to run it when they want it to happen (e.g., start or end)
@@ -207,8 +210,8 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   if (!a->coopter.done()) {
     // We have something to inject
     sysc = promise.value_;
-    //dprintf("We have something to inject in %lx at PC %lx:\n\t", asid, pc);
-    //dump_syscall(sysc);
+    dprintf("We have something to inject in %lx at PC %lx:\n\t", asid, pc);
+    dump_syscall(sysc);
 
   } else if (first) {
     // Nothing to inject and this is the first syscall
@@ -217,18 +220,19 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     //printf("SKIP0\n");
     if (!a->orig_syscall->has_retval) {
       // No-op: user registered a co-opter but it did nothing so we're already done
-      //printf("Warning: co-opter did nothing: ignoring it\n");
+      printf("Warning: co-opter did nothing: ignoring it\n");
       a->coopter.destroy();
-      active_details.erase(asid);
+      active_details.erase({asid, cpu_id});
       return;
     }
     sysc.nargs = 0;
     sysc.callno = SKIP_SYSNO;
     sysc.has_retval = true;
     sysc.retval = a->orig_syscall->retval;
-    dprintf("Skip original syscall (was %d) in %lx at %lx using new syscall %d and then set RV to %x\n", a->orig_syscall->callno, asid, pc, sysc.callno, a->orig_syscall->retval);
+    printf("Skip original syscall (was %d) in %lx at %lx using new syscall %d and then set RV to %x\n", a->orig_syscall->callno, asid, pc, sysc.callno, a->orig_syscall->retval);
 
   } else {
+    printf("FATAL: Not done and not first\n");
     assert(0); // This should never happen - if it isn't the first one
                // we would have bailed on the last return if we didn't have more
     return;
@@ -241,24 +245,26 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   if (sysc.callno == __NR_execve || sysc.callno == __NR_exit) { // XXX: others? fork/kill?
     dprintf("Injecting non-returning syscall: no longer tracing %lx\n", asid);
     a->coopter.destroy();
-    active_details.erase(asid);
+    active_details.erase({asid, cpu_id});
   }
 }
 
 extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid,
                           long unsigned int pc) {
-  if (!active_details.contains(asid)) {
+  unsigned long cpu_id = get_cpu_id(cpu);
+  if (!active_details.contains({asid, cpu_id})) {
     return;
   }
-  asid_details *details = active_details.at(asid);
+  asid_details *details = active_details.at({asid, cpu_id});
 
-  // Did we run a skip function? (i.e., not from a co-opter?) if so, do nothing.
-  // Otherwise: update retval and increment the co-opter
+  // If capability wants to finish and set a retval without running another
+  // syscall, it can set orig_syscall->retval and orig_syscall->has_retval
+  // Then we'll just set this to the retval on the sysret
   if (details->orig_syscall->has_retval) {
-    dprintf("\nReturn from skip in %lx with rv=%lx\n", asid, retval);
+    printf("\n***Return from no-op SC in %lx with rv=%lx\n", asid, retval);
   } else {
     details->retval = retval;
-    dprintf("Return from injected syscall in %lx with rv=%lx. Advance coopter:\n", asid, retval);
+    printf("Return from injected syscall in %lx with rv=%lx. Advance coopter:\n", asid, retval);
     details->coopter(); // Advance - will have access to the just returned value
     dprintf("\t[End of subsequent step]\n");
   }
@@ -268,15 +274,24 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
 
   if (details->coopter.done()) {
     // Co-opter is done. Clean up time
-#ifdef DEBUG
     struct kvm_regs oldregs;
+#ifdef DEBUG
     getregs(details, &oldregs);
     dprintf("\tCoopter done, last sc returned %x return to %lx\n", oldregs.rax, pc);
 #endif
 
     if (details->orig_syscall->has_retval) {
+      // We set a retval in orig_syscall object, return that
+      // This is how we'd do INJECT_SC_A, ORIG_SC, INJECT_SC_B and
+      // pretend nothign was injected
       new_regs.rax = details->orig_syscall->retval;
       dprintf("Change return to be %x\n", details->orig_syscall->retval);
+    } else {
+      // We weren't told the orig_syscall has a retval, that means the last
+      // return value shoudl be what we pass back. This is how we'd do
+      // INJECT_SC_A, INJECT_SC_B, ORIG.
+      getregs(details, &oldregs);
+      new_regs.rax = oldregs.rax;
     }
 
     if (details->use_orig_regs) {
@@ -297,7 +312,7 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
       }
 
     details->coopter.destroy();
-    active_details.erase(asid);
+    active_details.erase({asid, cpu_id});
   } else {
     dprintf("Not done - go back to %lx\n", pc-2);
     new_regs.rip = pc-2; // Take it back now, y'all

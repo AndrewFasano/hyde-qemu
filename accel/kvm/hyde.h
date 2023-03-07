@@ -45,7 +45,7 @@ typedef struct {
   unsigned int callno;
   unsigned long args[6];
   unsigned int nargs;
-  unsigned int retval; // Only used when co-opting
+  __u64 retval; // Only used when co-opting
   bool has_retval;
 } hsyscall;
 
@@ -104,12 +104,14 @@ typedef struct _asid_details {
 } asid_details;
 
 void dump_syscall(hsyscall h) {
+#ifdef DEBUG
   printf("syscall_%d(", h.callno);
   for (size_t i=0; i < h.nargs; i++) {
     printf("%#lx", h.args[i]);
     if ((i+1) < h.nargs) printf(", ");
   }
   printf(")\n");
+#endif
 }
 
 void default_on_ret(asid_details* a, void* cpu, unsigned long, unsigned long, unsigned long);

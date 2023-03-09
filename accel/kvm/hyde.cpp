@@ -528,3 +528,70 @@ int setregs(asid_details *r, struct kvm_regs *regs) {
 int setregs(void *cpu, struct kvm_regs *regs) {
   return kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &regs) == 0;
 }
+
+
+SyscCoroutine new_memread(asid_details* r, __u64 gva, void* out, size_t size) {
+  // We wish to read size bytes from the guest virtual address space
+  // and store them in the buffer pointed to by out. If out is NULL,
+  // we allocate it
+
+  struct kvm_translation trans = { .linear_address = gva };
+  //printf("Trying to read %llx\n", trans.linear_address);
+  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+
+  // Translation failed on base address - not in our TLB, maybe paged out
+  if (trans.physical_address == (unsigned long)-1) {
+      build_syscall(&r->scratch, __NR_access, gva, 0);
+      co_yield r->scratch; // Don't need RV in r->retval
+
+      // Now retry. if we fail again, bail
+      //printf("Retrying to read %llx\n", trans.linear_address);
+      assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+      //printf("\t result: %llx\n", trans.physical_address);
+      assert(trans.physical_address != (unsigned long)-1);
+  }
+
+  // Translation has succeeded, we have the guest physical address
+  // Now translate that to the host virtual address
+  __u64 hva;
+  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &hva) == 1);
+  //printf("Gva %llx => gpa %llx => hva %llx -> host data %llx\n", gva, trans.physical_address, hva, *(__u64*)hva);
+  memcpy((uint64_t*)out, (void*)hva, size);
+
+  #if 0
+  // For each page starting at gva:
+  #define PAGE_SIZE 0xFFFF
+  size_t offset = gva % PAGE_SIZE;
+
+  for (__u64 page_base = gva - offset; page_base < gva + size; page_base += PAGE_SIZE) {
+    // Translate the page base (guest virtual address) to a guest physical address
+    struct kvm_translation trans = { .linear_address = page_base };
+    assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+
+    // Translation failed on base address - not in our TLB, maybe paged out
+    if (trans.physical_address == (unsigned long)-1) {
+        build_syscall(&r->scratch, __NR_access, page_base, 0);
+        co_yield r->scratch;
+        // Don't need RV in r->retval
+
+        // Now retry. if we fail again, bail
+        assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+        assert(trans.physical_address != (unsigned long)-1);
+    }
+
+    // Translation has succeeded, we have the guest physical address
+    // Now translate that to the host virtual address
+    __u64 hva;
+    assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &hva) == 1);
+
+    //char* out_ptr = (char*)out + (page_base - gva);
+
+    size_t bytes_to_read = std::min(PAGE_SIZE, (int)(size - offset));
+
+    memcpy(out + (page_base - gva ), (void*)(hva + offset), bytes_to_read);
+    size -= bytes_to_read;
+    offset = 0; // Only relevant for first iteration
+  }
+  #endif
+  co_return;
+}

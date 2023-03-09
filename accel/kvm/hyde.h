@@ -41,6 +41,18 @@
 #define set_ARG5(s, x)   (s).r9  =x
 #define set_RET(s, x)    (s).rax  =x
 
+#define yield_from(f, ...) \
+  do { \
+    auto h = f(__VA_ARGS__).h_; \
+    auto &promise = h.promise(); \
+    while (!h.done()) { \
+        co_yield promise.value_; \
+        h(); /* Advance the other coroutine  */ \
+    } \
+    h.destroy(); \
+  } while(0);
+
+
 typedef struct {
   unsigned int callno;
   unsigned long args[6];
@@ -233,5 +245,7 @@ typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int, 
 extern "C" {
   create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc, unsigned int asid);
 }
+
+SyscCoroutine new_memread(asid_details* r, __u64 gva, void* out, size_t size);
 
 #endif

@@ -229,7 +229,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     sysc.callno = SKIP_SYSNO;
     sysc.has_retval = true;
     sysc.retval = a->orig_syscall->retval;
-    printf("Skip original syscall (was %d) in %lx at %lx using new syscall %d and then set RV to %x\n", a->orig_syscall->callno, asid, pc, sysc.callno, a->orig_syscall->retval);
+    printf("Skip original syscall (was %d) in %lx at %lx using new syscall %d and then set RV to %llx\n", a->orig_syscall->callno, asid, pc, sysc.callno, a->orig_syscall->retval);
 
   } else {
     printf("FATAL: Not done and not first\n");

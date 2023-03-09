@@ -185,7 +185,7 @@ hsyscall* _allocate_hsyscall();
 #define map_guest_pointer_status(details, varname, ptr, success) __memread_status(varname, details, ptr, success)
 #define map_guest_pointer(details, varname, ptr) __memread(varname, details, ptr)
 
-#define yield_syscall(r, ...) (build_syscall(&r->scratch, __VA_ARGS__), co_yield r->scratch, r->retval)
+#define yield_syscall(r, ...) (build_syscall(&r->scratch, __VA_ARGS__), (co_yield r->scratch), r->retval)
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return;};
 
 void dump_sc(struct kvm_regs r) {

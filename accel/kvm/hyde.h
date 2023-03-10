@@ -53,6 +53,8 @@
   } while(0);
 
 
+typedef uint64_t ga; // Guest pointer - shouldnt't read directly
+
 typedef struct {
   unsigned int callno;
   unsigned long args[6];
@@ -246,6 +248,9 @@ extern "C" {
   create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc, unsigned int asid);
 }
 
-SyscCoroutine new_memread(asid_details* r, __u64 gva, void* out, size_t size);
+// TODO: these should be another class, want to be able to return status
+SyscCoroutine ga_memcpy(asid_details* r, void* out, ga* gva, size_t size);
+//SyscCoroutine ga_memmove(asid_details* r, ga* dest, void* src, size_t size);
+SyscCoroutine ga_map(asid_details* r,  ga* gva, void** host, size_t min_size);
 
 #endif

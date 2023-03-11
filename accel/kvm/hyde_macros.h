@@ -92,7 +92,14 @@
 // NARGS macro from https://stackoverflow.com/a/33349105/2796854
 #define NARGS(...) std::tuple_size<decltype(std::make_tuple(__VA_ARGS__))>::value
 #define build_syscall(h, callno, ...)  (_build_syscall(h, callno, NARGS(__VA_ARGS__), __VA_ARGS__))
-#define yield_syscall(r, callno, ...) (build_syscall(&r->scratch, callno, __VA_ARGS__), (co_yield r->scratch), r->retval)
+//#define yield_syscall(r, callno, ...) (build_syscall(&r->scratch, callno, __VA_ARGS__), (co_yield r->scratch), r->retval)
+#define yield_syscall(r, callno, ...) \
+({ \
+  hsyscall hsc; \
+  build_syscall(&hsc, callno, __VA_ARGS__); \
+  co_yield hsc; \
+  hsc.retval; \
+})
 
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return -1;};
 

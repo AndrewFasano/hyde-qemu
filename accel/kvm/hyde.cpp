@@ -34,15 +34,15 @@ __u64 memread(asid_details*, __u64, hsyscall*);
 __u64 translate(void *cpu, __u64 gva, int* status);
 
 
+// TODO: Make this a coroutine so we can yield and wait for a syscall to complete
+// if necessary. - then we can use ga_helpers to access stack based arguments
 void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig) {
     struct kvm_regs r;
     memcpy(&r, orig, sizeof(struct kvm_regs));
     set_CALLNO(r, sysc->callno); // callno is always RAX
                                   // Arguments vary by OS
-
     //dprintf("Applying syscall to registers:");
     //dump_syscall(*sysc);
-
 
 #ifdef WINDOWS
     if (sysc->nargs > 0) r.r10 = sysc->args[0];
@@ -91,20 +91,25 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
 
 bool is_syscall_targetable(int callno, unsigned long asid) {
 #ifndef WINDOWS
-  // Linux specific: avoid sigreturn and seccomp'd processes
+  // On linux guests we have two cases where we should never inject a syscall
+  // 1. If the syscall is sigreturn or rt_sigreturn: these are used to restore
+  //   the signal mask and other state after a signal handler returns. If we
+  //   inject a syscall into one of these, we'll cause problems for the guest
+  // 2. If the process has used seccomp previously - in this case it is only
+  //   allowed to make syscalls that are explicitly allowed by the seccomp
+  //  filter. Since we don't know what's allowed, we'll ignore it.
 
-  if (callno == 15 || callno == __NR_rt_sigreturn) { // 15 is sigreturn
-    // We should never interfere with these, even if we're co-opting a process
+  if (callno == __NR_rt_sigreturn) {
     // Note these do not return so we only have to worry about them here
     return false;
   }
 
-  if (callno == 317) { // sys_seccomp
-    // This asid is using SECOMP let's never inject into it
+  if (callno == __NR_seccomp) {
+    // Record that this asid has used seccomp and avoid it until it quits
     did_seccomp.insert(asid);
   }
   if (did_seccomp.find(asid) != did_seccomp.end()) {
-    if (callno == 60 || callno == 231) { // sys_exit, sys_exitgroup
+    if (callno == __NR_exit || callno == __NR_exit_group) { // sys_exit, sys_exitgroup
       // An asid we've been avoiding is quitting - remove from our avoid list
       did_seccomp.erase(asid);
     }
@@ -114,109 +119,92 @@ bool is_syscall_targetable(int callno, unsigned long asid) {
   return true;
 }
 
-asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, unsigned long pc) {
-  asid_details *a = NULL;
-  struct kvm_regs r;
-  //for (coopter_f* coopter : coopters) {
-  unsigned long cpu_id = get_cpu_id(cpu);
-  for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
-    coopter_f* coopter = pair.second;
-    create_coopt_t *f = (*coopter)(cpu, callno, pc, asid);
-    if (f != NULL) {
-      //dprintf("\n----------\n\nCREATE coopter for %s in %lx on cpu %ld\n", pair.first.c_str(), asid, cpu_id);
-      //printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
-      // A should_coopt function has returned non-null, set this asid
-      // up to be coopted by the coopter generator which it returned
-      a = new asid_details;
-
-      active_details[{asid, cpu_id}] = a;
-      a->cpu = cpu;
-      a->asid = asid;
-      a->custom_return = 0;
-      a->use_orig_regs = false;
-
-      // Get & store original registers before we run the coopter's first iteration
-      assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0);
-      //dump_regs(r);
-      memcpy(&a->orig_regs, &r, sizeof(struct kvm_regs));
-
-      a->orig_syscall = new hsyscall;
-      a->orig_syscall->nargs = 6;
-      a->orig_syscall->callno = CALLNO(r);
-      a->orig_syscall->args[0] = ARG0(r);
-      a->orig_syscall->args[1] = ARG1(r);
-      a->orig_syscall->args[2] = ARG2(r);
-      a->orig_syscall->args[3] = ARG3(r);
-      a->orig_syscall->args[4] = ARG4(r);
-      a->orig_syscall->args[5] = ARG5(r);
-      a->orig_syscall->has_retval = false;
-
-      dprintf("Co-opter starts from: ");
-      dump_syscall(*a->orig_syscall);
-
-
-      // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
-      // The value we get in rflags won't match the value that emulate_syscall is putting
-      // into rflags - so we compute it ourselves
-      //a->orig_regs.rflags = (a->orig_regs.r11 & 0x3c7fd7) | 0x2;
-      // XXX: Why don't we need/want that anymore?
-
-      // XXX: this *runs* the coopter function up until its first co_yield/co_ret
-      dprintf("Start running coopter:\n");
-      a->coopter = (*f)(active_details[{asid, cpu_id}]).h_;
-      dprintf("\t[End of first step]\n");
-      return a;
-    }
+asid_details* find_asid_details(void* cpu, unsigned long cpu_id, long unsigned int asid, long unsigned int callno, long unsigned int pc, long unsigned int orig_rcx, long unsigned int orig_r11, bool* first) {
+  if (active_details.contains({asid, cpu_id})) {
+    // We already have a co-opter for this asid, it should have been
+    // advanced on the last syscall return
+    return active_details.at({asid, cpu_id});
+    // No value in fetching regs again, they're the same
   }
 
+  // No active co-opter for asid - check to see if any want to start
+  // If we find one, we initialize it, running to the first yield/ret
+  struct kvm_regs r;
+  for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
+    // Call the should_coopt function for this coopter
+    create_coopt_t *f = (*pair.second)(cpu, callno, pc, asid);
+    // if a should_coopt function returns non-null, set this asid up to be coopted
+    // by the coopter generator which it returned.
+    if (f == NULL) {
+      continue;
+    }
+
+    //printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
+    // Get & store original registers before we run the coopter's first iteration
+    assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0); //dump_regs(r);
+
+    asid_details *a = new asid_details {
+      .orig_syscall = new hsyscall {
+        .callno = CALLNO(r),
+        .nargs = 6,
+        .args = { ARG0(r), ARG1(r), ARG2(r), ARG3(r), ARG4(r), ARG5(r) },
+        .has_retval = false,
+      },
+      .cpu = cpu,
+      .asid = asid,
+      .orig_rcx = orig_rcx,
+      .orig_r11 = orig_r11,
+      .use_orig_regs = false,
+      .custom_return = 0,
+    };
+
+    memcpy(&a->orig_regs, &r, sizeof(struct kvm_regs));
+
+    active_details[{asid, cpu_id}] = a;
+
+    //dprintf("Co-opter starts from: ");
+    //dump_syscall(*a->orig_syscall);
+
+    // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
+    // The value we get in rflags won't match the value that emulate_syscall is putting
+    // into rflags - so we compute it ourselves
+    //a->orig_regs.rflags = (a->orig_regs.r11 & 0x3c7fd7) | 0x2;
+    // XXX: Why don't we need/want that anymore?
+
+    // XXX: this *runs* the coopter function up until its first co_yield/co_ret
+    // XXX: Want to run this after placing our key in active_detials!
+    a->coopter = (*f)(active_details[{asid, cpu_id}]).h_;
+
+    *first = true;
+    return a;
+  }
+  // no match
   return NULL;
 }
 
 extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc,
                            long unsigned int orig_rcx, long unsigned int orig_r11) {
-  asid_details *a = NULL;
+  hsyscall sysc;
+  unsigned long cpu_id = get_cpu_id(cpu);
   bool first = false;
 
   if (!is_syscall_targetable(callno, asid)) {
     return;
   }
-  unsigned long cpu_id = get_cpu_id(cpu);
-
-  if (!active_details.contains({asid, cpu_id})) {
-    // No active co-opter for asid - check to see if any want to start
-    // If we find one, we initialize it, running to the first yield/ret
-    a = find_and_init_coopter(cpu, callno, asid, (unsigned long)pc);
-    if (a == NULL) {
-      return; 
-    }
-    a->orig_rcx = orig_rcx;
-    a->orig_r11 = orig_r11;
-
-    first = true;
-  } else {
-    // We already have a co-opter for this asid, it should have been
-    // advanced on the last syscall return
-    a = active_details.at({asid, cpu_id});
-
-    // No value in fetching regs again, they're the same
-    //struct kvm_regs tmp;
-    //assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &tmp) == 0);
-    //assert(memcmp(&tmp, &a->orig_regs, sizeof(struct kvm_regs)) == 0);
+  asid_details *a = find_asid_details(cpu, cpu_id, asid, callno, pc, orig_rcx, orig_r11, &first);
+  //printf("Syscall in active %lx on cpu %ld: callno: %ld\n", asid, cpu_id, callno);
+  if (a == NULL) {
+    // No co-opter for this asid
+    return;
   }
 
-  //printf("Syscall in active %lx on cpu %ld: callno: %ld\n", asid, cpu_id, callno);
-
-  // In general, we'll store the original syscall and require the *user*
-  // to run it when they want it to happen (e.g., start or end)
-  // Original syscall will be mutable.
-
-  hsyscall sysc;
   sysc.nargs = (unsigned int)-1;
   auto &promise = a->coopter.promise();
 
   if (!a->coopter.done()) {
     // We have something to inject
     sysc = promise.value_;
+    printf("Coopter yields sc %lu with %d nargs\n", sysc.callno, sysc.nargs);
     dprintf("We have something to inject in %lx at PC %lx:\n\t", asid, pc);
     dump_syscall(sysc);
 
@@ -224,7 +212,6 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     // Nothing to inject and this is the first syscall
     // so we need to run a skip! We do this with a "no-op" syscall
     // and hiding the result on return
-    //printf("SKIP0\n");
     if (!a->orig_syscall->has_retval) {
       // No-op: user registered a co-opter but it did nothing so we're already done
       printf("Warning: co-opter did nothing: ignoring it\n");
@@ -235,16 +222,17 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     sysc.nargs = 0;
     sysc.callno = SKIP_SYSNO;
     sysc.has_retval = true;
-    sysc.retval = a->orig_syscall->retval;
-    printf("Skip original syscall (was %d) in %lx at %lx using new syscall %d and then set RV to %lx\n", a->orig_syscall->callno, asid, pc, sysc.callno, a->orig_syscall->retval);
+    sysc.retval = a->orig_syscall->retval; // This is how a user specifies the desired retval
+    printf("Skip original syscall (was %ld) in %lx at %lx using new syscall %ld and then set RV to %lx\n", a->orig_syscall->callno, asid, pc, sysc.callno, a->orig_syscall->retval);
 
   } else {
-    printf("FATAL: Not done and not first\n");
-    assert(0); // This should never happen - if it isn't the first one
-               // we would have bailed on the last return if we didn't have more
+    assert(0 && "FATAL: Not done and not first\n"); // Unreachable
     return;
   }
 
+  assert(sysc.nargs < 1024);
+
+  // Copy the data out of our struct and into guest registers
   set_regs_to_syscall(a, cpu, &sysc, &a->orig_regs);
 
   // If it's a non-returning syscall(?) we can't catch it on return - clean up now.
@@ -559,18 +547,18 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva, size_t size) {
 
   struct kvm_translation trans = { .linear_address = (__u64)gva };
   //printf("Trying to read %llx\n", trans.linear_address);
-  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+  if(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) != 0) co_return -1;
 
   // Translation failed on base address - not in our TLB, maybe paged out
   if (trans.physical_address == (unsigned long)-1) {
-      build_syscall(&r->scratch, __NR_access, (__u64)gva, 0);
-      co_yield r->scratch; // Don't need RV in r->retval
+      yield_syscall(&r->scratch, __NR_access, (__u64)gva, 0);
 
       // Now retry. if we fail again, bail
       //printf("Retrying to read %llx\n", trans.linear_address);
-      assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+      if (kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) != 0) co_return -1;
       //printf("\t result: %llx\n", trans.physical_address);
       if(trans.physical_address == (unsigned long)-1) {
+        printf("Return -1 in gamemcpy\n");
         co_return -1; // Failure
       }
   }
@@ -578,7 +566,7 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva, size_t size) {
   // Translation has succeeded, we have the guest physical address
   // Now translate that to the host virtual address
   __u64 hva;
-  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &hva) == 1);
+  if (kvm_host_addr_from_physical_physical_memory(trans.physical_address, &hva) != 1) co_return -1;
   //printf("Gva %llx => gpa %llx => hva %llx -> host data %llx\n", gva, trans.physical_address, hva, *(__u64*)hva);
   memcpy((uint64_t*)out, (void*)hva, size);
 
@@ -617,6 +605,8 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva, size_t size) {
     offset = 0; // Only relevant for first iteration
   }
   #endif
+
+  printf("Return 0 at end in gamemcpy\n");
   co_return 0;
 }
 

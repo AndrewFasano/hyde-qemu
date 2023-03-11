@@ -45,6 +45,7 @@ struct HydeCoro {
   struct promise_type {
     T value_;
     uint64_t retval;
+    bool did_return = false;
 
     ~promise_type() { }
 
@@ -61,11 +62,17 @@ struct HydeCoro {
     std::suspend_always yield_value(hsyscall value) {
       value_ = value;
       return {};
+      did_return = false;
+      printf("Yielding a value\n");
     }
 
     //void return_value(T const& value) {
     void return_value(int value) {
       retval = value;
+      value_ = {0};
+      assert(!did_return);
+      did_return = true;
+      printf("Returning a value: %ld\n", retval);
     };
   };
 

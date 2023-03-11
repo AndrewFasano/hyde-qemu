@@ -27,6 +27,13 @@ void dprintf(const char *fmt, ...) {
 #endif
 }
 
+// TODO: make more helpers generators so they can inject syscalls
+
+// We should get rid of these...
+__u64 memread(asid_details*, __u64, hsyscall*);
+__u64 translate(void *cpu, __u64 gva, int* status);
+
+
 void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig) {
     struct kvm_regs r;
     memcpy(&r, orig, sizeof(struct kvm_regs));
@@ -387,6 +394,7 @@ extern "C" void hyde_init(void) {
 }
 
 // Gross set of build_syscall functions without vaargs
+#if 0
 static void _build_syscall(hsyscall* s, unsigned int callno, int nargs,
     int unsigned long arg0, int unsigned long arg1, int unsigned long arg2,
     int unsigned long arg3, int unsigned long arg4, int unsigned long arg5) {
@@ -431,6 +439,39 @@ void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0) {
 
 void build_syscall(hsyscall* s, unsigned int callno) {
   _build_syscall(s, callno, 0, /*args:*/0, 0, 0, 0, 0, 0);
+}
+#endif
+
+void _build_syscall(hsyscall* s, uint callno, int nargs, ...) {
+  s->callno = callno;
+  s->nargs = nargs;
+  // for each va arg
+  va_list args;
+  va_start(args, nargs);
+  for (int i = 0; i < nargs; i++) {
+    s->args[i] = va_arg(args, uint64_t);
+  }
+  va_end(args);
+}
+
+
+__u64 translate(void *cpu, __u64 gva, int* error) {
+  struct kvm_translation trans = {
+    .linear_address = gva
+  };
+
+  *error = kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &trans); // Zero on success
+
+  if (*error) {
+    return (__u64)-1;
+  }
+
+  __u64 phys_addr;
+  if (kvm_host_addr_from_physical_physical_memory(trans.physical_address, &phys_addr) != 1) {
+    *error = true;
+    return (__u64)-1;
+  }
+  return phys_addr;
 }
 
 
@@ -479,7 +520,7 @@ __u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
       build_syscall(sc, 0x00d2, gva);
 
 #else
-      build_syscall(sc, __NR_access, gva, 0);
+      build_syscall(sc, __NR_access, (uint64_t)gva, 0);
 #endif
       return (__u64)-1;
     } else {
@@ -498,25 +539,6 @@ int getregs(asid_details *r, struct kvm_regs *regs) {
   return kvm_vcpu_ioctl(r->cpu, KVM_GET_REGS, regs);
 }
 
-__u64 translate(void *cpu, __u64 gva, int* error) {
-  struct kvm_translation trans = {
-    .linear_address = gva
-  };
-
-  *error = kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &trans); // Zero on success
-
-  if (*error) {
-    return (__u64)-1;
-  }
-
-  __u64 phys_addr;
-  if (kvm_host_addr_from_physical_physical_memory(trans.physical_address, &phys_addr) != 1) {
-    *error = true;
-    return (__u64)-1;
-  }
-  return phys_addr;
-}
-
 int getregs(void *cpu, struct kvm_regs *regs) {
   return kvm_vcpu_ioctl(cpu, KVM_GET_REGS, regs);
 }
@@ -530,7 +552,7 @@ int setregs(void *cpu, struct kvm_regs *regs) {
 }
 
 
-SyscCoroutine ga_memcpy(asid_details* r, void* out, ga* gva, size_t size) {
+SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva, size_t size) {
   // We wish to read size bytes from the guest virtual address space
   // and store them in the buffer pointed to by out. If out is NULL,
   // we allocate it
@@ -548,7 +570,9 @@ SyscCoroutine ga_memcpy(asid_details* r, void* out, ga* gva, size_t size) {
       //printf("Retrying to read %llx\n", trans.linear_address);
       assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
       //printf("\t result: %llx\n", trans.physical_address);
-      assert(trans.physical_address != (unsigned long)-1);
+      if(trans.physical_address == (unsigned long)-1) {
+        co_return -1; // Failure
+      }
   }
 
   // Translation has succeeded, we have the guest physical address
@@ -593,27 +617,31 @@ SyscCoroutine ga_memcpy(asid_details* r, void* out, ga* gva, size_t size) {
     offset = 0; // Only relevant for first iteration
   }
   #endif
+  co_return 0;
 }
-SyscCoroutine ga_map(asid_details* r,  ga* gva, void** host, size_t min_size) {
+
+
+SyscCoro ga_map(asid_details* r,  ga* gva, void** host, size_t min_size) {
   // Set host to a host virtual address that maps to the guest virtual address gva
 
   // TODO: Assert that gva+0 and gva+min_size can both be reached
   //at host[0], and host[min_size] after mapping. If not, fail?
   // TODO how to handle failures here?
 
-  struct kvm_translation trans = { .linear_address = (__u64)gva };
+  struct kvm_translation trans = { .linear_address = (uint64_t)gva };
   assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
 
   // Translation failed on base address - not in our TLB, maybe paged out
   if (trans.physical_address == (unsigned long)-1) {
-      build_syscall(&r->scratch, __NR_access, (__u64)gva, 0);
-      co_yield r->scratch; // Don't need RV in r->retval
+      yield_syscall(r, __NR_access, (__u64)gva, 0);
 
       // Now retry. if we fail again, bail
       //printf("Retrying to read %llx\n", trans.linear_address);
       assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
       //printf("\t result: %llx\n", trans.physical_address);
-      assert(trans.physical_address != (unsigned long)-1);
+      if (trans.physical_address == (unsigned long)-1) {
+        co_return -1; // Failure!
+      }
   }
 
   // Translation has succeeded, we have the guest physical address
@@ -622,4 +650,51 @@ SyscCoroutine ga_map(asid_details* r,  ga* gva, void** host, size_t min_size) {
   assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &hva) == 1);
   (*host) = (void*)hva;
 
+  co_return 0;
+}
+
+// Helpers
+void dump_sc(struct kvm_regs r) {
+#ifndef WINDOWS
+  // LINUX
+  printf("Callno %lld (%llx, %llx, %llx, %llx, %llx, %llx)\n", CALLNO(r),
+        ARG0(r), ARG1(r), ARG2(r), ARG3(r), ARG4(r), ARG5(r));
+#else
+  // Windows
+  printf("Callno %lld (%llx, %llx, %llx, %llx)\n", CALLNO(r),
+        r.r10, r.rdx, r.r8, r.r9);
+#endif
+}
+
+void dump_sc_with_stack(asid_details* a, struct kvm_regs r) {
+  dump_sc(r);
+  // Dump stack too!
+  unsigned long int *stack;
+  stack = (unsigned long int*)memread(a, r.rsp, nullptr);
+#ifdef WINDOWS
+  for (int i=0; i < 10; i++) {
+#else
+    if (0) { // TODO linux stack based logging
+      int i = 0;
+#endif
+    printf("\t - Stack[%d] = %lx\n", i, stack[i]);
+  }
+}
+
+void dump_regs(struct kvm_regs r) {
+  printf("PC: %016llx    RAX: %016llx    RBX %016llx    RCX %016llx    RDX %016llx   RSI %016llx   RDI %016llx   RSP %016llx\n",
+      r.rip, r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rsp);
+  printf("\t RBP: %016llx    R8 %016llx    R9 %016llx    R10 %016llx    R11 %016llx    R12 %016llx    R13 %016llx\n", r.rbp, r.r8, r.r9, r.r10, r.r11, r.r12, r.r13);
+  printf("\t R14: %016llx    R15: %016llx    RFLAGS %016llx\n", r.r14, r.r15, r.rflags);
+}
+
+void dump_syscall(hsyscall h) {
+#ifdef DEBUG
+  printf("syscall_%d(", h.callno);
+  for (size_t i=0; i < h.nargs; i++) {
+    printf("%#lx", h.args[i]);
+    if ((i+1) < h.nargs) printf(", ");
+  }
+  printf(")\n");
+#endif
 }

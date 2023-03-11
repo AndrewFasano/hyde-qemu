@@ -7,9 +7,9 @@
 //#define WINDOWS
 
 typedef struct {
-  unsigned int callno;
-  uint64_t args[6];
+  uint64_t callno;
   unsigned int nargs;
+  uint64_t args[6];
   uint64_t retval; // Only used when co-opting
   bool has_retval;
 } hsyscall;

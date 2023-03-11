@@ -19,16 +19,16 @@ typedef struct _asid_details {
 #ifdef DEBUG
   unsigned int injected_callno; // Debug only
 #endif
-  unsigned int asid;
-  unsigned long int orig_rcx;
-  unsigned long int orig_r11;
+  uint64_t asid;
+  uint64_t orig_rcx;
+  uint64_t orig_r11;
   bool use_orig_regs; // If set, after sysret we'll restore RCX/R11 to their pre-syscall values
   unsigned long custom_return;
   bool modify_original_args;
   std::function<void(struct kvm_regs*)> *modify_on_ret;
 
   std::function<void(_asid_details*, void*, unsigned long, unsigned long, unsigned long)> *on_ret;
-  hsyscall scratch;
+  //hsyscall scratch;
 } asid_details;
 
 

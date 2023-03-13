@@ -63,16 +63,15 @@ struct HydeCoro {
       value_ = value;
       return {};
       did_return = false;
-      printf("Yielding a value\n");
+      //printf("Yielding a value\n");
     }
 
     //void return_value(T const& value) {
     void return_value(int value) {
       retval = value;
       value_ = {0};
-      assert(!did_return);
-      did_return = true;
-      printf("Returning a value: %ld\n", retval);
+      did_return = true; // Do we need this? Can't tell if these are staying alive too long or there are just lots
+      //printf("Returning a value: %ld\n", retval);
     };
   };
 

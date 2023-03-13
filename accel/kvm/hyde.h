@@ -64,7 +64,7 @@ typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int, 
 // more syscalls if they'd like
 SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size);
 SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva, size_t size);
-SyscCoro ga_memwrite(asid_details* r, void* in, ga* gva, size_t size);
+SyscCoro ga_memwrite(asid_details* r, ga* gva, void* in, size_t size);
 //SyscCoro ga_memmove(asid_details* r, ga* dest, void* src, size_t size);
 SyscCoro ga_map(asid_details* r,  ga* gva, void** host, size_t min_size);
 

@@ -653,9 +653,10 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva_base, size_t size) {
 
 /* Given a host buffer, write it to a guest virtual address. The opposite
  * of ga_memcpy */
-SyscCoro ga_memwrite(asid_details* r, void* in, ga* gva, size_t size) {
+SyscCoro ga_memwrite(asid_details* r, ga* gva, void* in, size_t size) {
   // TODO: re-issue translation requests as necessary
   uint64_t hva;
+  assert(size != 0);
 
   if (!translate_gva(r, gva, &hva)) {
       yield_syscall(r, __NR_access, (__u64)gva, 0);
@@ -663,6 +664,8 @@ SyscCoro ga_memwrite(asid_details* r, void* in, ga* gva, size_t size) {
         co_return -1; // Failure, even after retry
       }
   }
+
+  //printf("Copying %lu bytes of %s to GVA %lx\n", size, (char*)in, (uint64_t)gva);
   memcpy((uint64_t*)hva, in, size);
   co_return 0;
 }

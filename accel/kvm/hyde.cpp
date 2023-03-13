@@ -133,7 +133,7 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
       return NULL; // XXX: should this be a continue?
     }
 
-    printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
+    dprintf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
 
     // Get & store original registers before we run the coopter's first iteration
     assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0); //dump_regs(r);
@@ -197,7 +197,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   } else {
     // We already have a co-opter for this asid, it should have been
     // advanced on the last syscall return
-    printf("Have existing coopter from {%lx, %lx}\n", asid, cpu_id);
+    dprintf("Have existing coopter from {%lx, %lx}\n", asid, cpu_id);
     a = active_details.at({asid, cpu_id});
     // No value in fetching regs again, they're the same
   }
@@ -269,7 +269,7 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
     printf("\n***Return from no-op SC in %lx with rv=%lx\n", asid, retval);
   } else {
     details->last_sc_retval = retval;
-    printf("Return from injected syscall in %lx with rv=%lx. Advance coopter:\n", asid, retval);
+    dprintf("Return from injected syscall in %lx with rv=%lx. Advance coopter:\n", asid, retval);
     details->coopter(); // Advance - will have access to the just returned value
     dprintf("\t[End of subsequent step]\n");
   }
@@ -564,7 +564,7 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva, size_t size) {
 
   // Translation failed on base address - not in our TLB, maybe paged out
   if (trans.physical_address == (unsigned long)-1) {
-      yield_syscall(&r->scratch, __NR_access, (__u64)gva, 0);
+      yield_syscall(r, __NR_access, (__u64)gva, 0);
 
       // Now retry. if we fail again, bail
       //printf("Retrying to read %llx\n", trans.linear_address);
@@ -637,7 +637,7 @@ SyscCoro ga_map(asid_details* r,  ga* gva, void** host, size_t min_size) {
       yield_syscall(r, __NR_access, _gva, 0);
 
       // Now retry. if we fail again, bail
-      printf("Retrying to read %llx\n", trans.linear_address);
+      //printf("Retrying to read %llx\n", trans.linear_address);
       assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
       //printf("\t result: %llx\n", trans.physical_address);
       if (trans.physical_address == (unsigned long)-1) {

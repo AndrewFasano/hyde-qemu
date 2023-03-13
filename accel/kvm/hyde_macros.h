@@ -95,12 +95,14 @@
 #define build_syscall(h, callno, ...)  (_build_syscall(h, callno, NARGS(__VA_ARGS__), __VA_ARGS__))
 //#define yield_syscall(r, callno, ...) (build_syscall(&r->scratch, callno, __VA_ARGS__), (co_yield r->scratch), r->retval)
 
+// Make macros work when variadic arguments are empty. https://stackoverflow.com/a/5897216
+//#define VA_ARGS(...) , ## __VA_ARGS__
 /* Yield_syscall yields a syscall, then gets retval after it's set on sysret in our asid_details */
 #define yield_syscall(r, callno, ...) \
 ({ \
   hsyscall hsc; \
-  build_syscall(&hsc, callno, __VA_ARGS__); \
-  co_yield hsc; \
+  _build_syscall(&hsc, callno, NARGS(__VA_ARGS__) __VA_OPT__(,) __VA_ARGS__, NULL); \
+  (co_yield hsc); \
   r->last_sc_retval; \
 })
 

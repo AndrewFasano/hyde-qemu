@@ -3,6 +3,7 @@
 // but that's it. on_syscall and on_sysret are called as necessary by kvm-all.c
 // The logic in here is split out so we can use C++ features for state management
 
+#include <algorithm>
 #include <asm/unistd.h> // Syscall numbers
 #include <cassert>
 #include <cstring>
@@ -11,6 +12,7 @@
 #include <map>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <string>
 #include <vector>
 
@@ -88,7 +90,6 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
     //dump_regs(r);
 }
 
-
 bool is_syscall_targetable(int callno, unsigned long asid) {
 #ifndef WINDOWS
   // On linux guests we have two cases where we should never inject a syscall
@@ -133,7 +134,7 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
       return NULL; // XXX: should this be a continue?
     }
 
-    dprintf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
+    //printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
 
     // Get & store original registers before we run the coopter's first iteration
     assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0); //dump_regs(r);
@@ -552,74 +553,119 @@ int setregs(void *cpu, struct kvm_regs *regs) {
   return kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &regs) == 0;
 }
 
+bool can_translate_gva(void*cpu, ga* gva) {
+  struct kvm_translation trans = { .linear_address = (__u64)gva };
 
-SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva, size_t size) {
+  // Requesting the translation shouldn't ever fail, even though
+  // the translated result might be that the translation failed
+  assert(kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &trans) == 0);
+
+  // Translation ok if valid and != -1
+  return (trans.valid && trans.physical_address != (unsigned long)-1);
+}
+
+/* Given a GVA, try to translate it to a host address.
+ * return indicates success. If success, host address 
+ * will be set in hva argument. */
+bool translate_gva(asid_details *r, ga* gva, uint64_t* hva) {
+  if (!can_translate_gva(r->cpu, gva)) {
+    return false;
+  }
+  // Duplicate some logic from can_translate_gva so we can get the physaddr here
+  struct kvm_translation trans = { .linear_address = (__u64)gva };
+  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+
+  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, (__u64*)hva) == 1);
+  return true;
+}
+
+/*
+ * Copy size bytes from a guest virtual address into a host buffer.
+ */
+SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size) {
   // We wish to read size bytes from the guest virtual address space
   // and store them in the buffer pointed to by out. If out is NULL,
   // we allocate it
 
-  struct kvm_translation trans = { .linear_address = (__u64)gva };
-  //printf("Trying to read %llx\n", trans.linear_address);
-  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+  uint64_t hva;
 
-  // Translation failed on base address - not in our TLB, maybe paged out
-  if (trans.physical_address == (unsigned long)-1) {
+  if (!translate_gva(r, gva, &hva)) {
       yield_syscall(r, __NR_access, (__u64)gva, 0);
-
-      // Now retry. if we fail again, bail
-      //printf("Retrying to read %llx\n", trans.linear_address);
-      assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
-      //printf("\t result: %llx\n", trans.physical_address);
-      if(trans.physical_address == (unsigned long)-1) {
-        co_return -1; // Failure
+      if (!translate_gva(r, gva, &hva)) {
+        co_return -1; // Failure, even after retry
       }
   }
 
-  // Translation has succeeded, we have the guest physical address
-  // Now translate that to the host virtual address
-  __u64 hva;
-  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &hva) == 1);
-  //printf("Gva %llx => gpa %llx => hva %llx -> host data %llx\n", gva, trans.physical_address, hva, *(__u64*)hva);
   memcpy((uint64_t*)out, (void*)hva, size);
-
-  #if 0
-  // For each page starting at gva:
-  #define PAGE_SIZE 0xFFFF
-  size_t offset = gva % PAGE_SIZE;
-
-  for (__u64 page_base = gva - offset; page_base < gva + size; page_base += PAGE_SIZE) {
-    // Translate the page base (guest virtual address) to a guest physical address
-    struct kvm_translation trans = { .linear_address = page_base };
-    assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
-
-    // Translation failed on base address - not in our TLB, maybe paged out
-    if (trans.physical_address == (unsigned long)-1) {
-        build_syscall(&r->scratch, __NR_access, page_base, 0);
-        co_yield r->scratch;
-        // Don't need RV in r->retval
-
-        // Now retry. if we fail again, bail
-        assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
-        assert(trans.physical_address != (unsigned long)-1);
-    }
-
-    // Translation has succeeded, we have the guest physical address
-    // Now translate that to the host virtual address
-    __u64 hva;
-    assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &hva) == 1);
-
-    //char* out_ptr = (char*)out + (page_base - gva);
-
-    size_t bytes_to_read = std::min(PAGE_SIZE, (int)(size - offset));
-
-    memcpy(out + (page_base - gva ), (void*)(hva + offset), bytes_to_read);
-    size -= bytes_to_read;
-    offset = 0; // Only relevant for first iteration
-  }
-  #endif
   co_return 0;
 }
 
+
+/*
+ * Copy size bytes from a guest virtual address into a host buffer, re-issue
+ * translation requests as necessary, guaranteed to work so long as address through
+ * address + size are mappable
+ */
+SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva_base, size_t size) {
+  // Let's read from address to next page, then read pages? This is still a bit of a lazy implementation,
+  // really we should be like binary searching
+
+  #define PAGE_SIZE 0x1000uL
+  uint64_t first_offset = (uint64_t)gva_base % PAGE_SIZE;
+
+  //printf("ga_memcpy: request for %lx bytes at %lx\n", size, (uint64_t)gva_base);
+
+  if (first_offset != 0) {
+    ga* first_page = (ga*)((uint64_t)gva_base &~ (PAGE_SIZE - 1));
+    uint64_t hva;
+
+    //printf("ga_memcpy: first_offset = 0x%lx, first_page = %lx, first size=%lx\n", first_offset, (uint64_t)first_page, std::min((ulong)size, (PAGE_SIZE - first_offset)));
+
+    if (!translate_gva(r, first_page, &hva)) {
+        yield_syscall(r, __NR_access, (__u64)first_page, 0);
+        if (!translate_gva(r, gva_base, &hva)) {
+          co_return -1; // Failure, even after retry
+        }
+    }
+    // Sanity check, should be able to translate requested address now that we have the page?
+    assert(can_translate_gva(r->cpu, gva_base));
+
+    memcpy((uint64_t*)out, (void*)(hva + first_offset), std::min((ulong)size, (PAGE_SIZE - first_offset)));
+    //printf("ga_memcpy: first copy from host %lx\n", hva + first_offset);
+  }
+
+  // Now copy page-aligned memory, one page at a time
+  for (ga* page = gva_base + first_offset; page < gva_base + size; page += PAGE_SIZE) {
+    //printf("ga_memcpy: subsequent page = %p, size=%lu\n", page, std::min((ulong)size, PAGE_SIZE));
+    uint64_t hva;
+    if (!translate_gva(r, page, &hva)) {
+        yield_syscall(r, __NR_access, (__u64)page, 0);
+        if (!translate_gva(r, gva_base, &hva)) {
+          co_return -1; // Failure, even after retry
+        }
+    }
+
+    memcpy((uint64_t*)out+(page-gva_base), (void*)hva, std::min((ulong)size, PAGE_SIZE));
+  }
+
+  co_return 0;
+}
+
+/* Given a host buffer, write it to a guest virtual address. The opposite
+ * of ga_memcpy */
+SyscCoro ga_memwrite(asid_details* r, void* in, ga* gva, size_t size) {
+  // TODO: re-issue translation requests as necessary
+  uint64_t hva;
+
+  if (!translate_gva(r, gva, &hva)) {
+      yield_syscall(r, __NR_access, (__u64)gva, 0);
+      if (!translate_gva(r, gva, &hva)) {
+        co_return -1; // Failure, even after retry
+      }
+  }
+  memcpy((uint64_t*)hva, in, size);
+  co_return 0;
+}
 
 SyscCoro ga_map(asid_details* r,  ga* gva, void** host, size_t min_size) {
   // Set host to a host virtual address that maps to the guest virtual address gva
@@ -700,3 +746,18 @@ void dump_syscall(hsyscall h) {
   printf(")\n");
 #endif
 }
+
+#if 0
+strace -e execve -e raw=execve ./a.out ^C
+root@ubuntu:~# cat foo.c 
+#include <stdio.h>
+
+int main(int argc, char** argv, char** environ) {
+        printf("environ starting at %p\n", environ);
+        while (*environ != NULL) {
+                printf("\tAt %p we have %s\n", environ, *environ);
+                ++environ;
+        }
+}
+
+#endif

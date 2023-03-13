@@ -79,32 +79,32 @@
       co_yield __scratchvar(sc); \
       out = (__typeof__(out)) memread(r, (__u64)ptr, nullptr); \
       if ((__u64)out == (__u64)-1) { \
-        printf("FATAL: cannot read %lx\n", (long unsigned int)ptr); fflush(NULL); \
+        printf("fatal: cannot read %lx\n", (long unsigned int)ptr); fflush(null); \
         assert(0 && "memory read failed"); \
       } \
     } \
   } while (0)
 
 #define map_guest_pointer_status(details, varname, ptr, success) __memread_status(varname, details, ptr, success)
-#define map_guest_pointer(details, varname, ptr) __memread(varname, details, ptr)
+#define map_guest_pointer(details, varname, ptr) __memread(varname, details, ptr) 
+#define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return -1;};
 
 // yield and build syscall don't take number of arguments, we calculate at compile time
 // NARGS macro from https://stackoverflow.com/a/33349105/2796854
 #define NARGS(...) std::tuple_size<decltype(std::make_tuple(__VA_ARGS__))>::value
 #define build_syscall(h, callno, ...)  (_build_syscall(h, callno, NARGS(__VA_ARGS__), __VA_ARGS__))
 //#define yield_syscall(r, callno, ...) (build_syscall(&r->scratch, callno, __VA_ARGS__), (co_yield r->scratch), r->retval)
+
+/* Yield_syscall yields a syscall, then gets retval after it's set on sysret in our asid_details */
 #define yield_syscall(r, callno, ...) \
 ({ \
   hsyscall hsc; \
   build_syscall(&hsc, callno, __VA_ARGS__); \
   co_yield hsc; \
-  hsc.retval; \
+  r->last_sc_retval; \
 })
 
-#define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return -1;};
-
-
-
+/* Yield_from runs a coroutine, yielding the syscalls it yields, then finally returns a value that's co_returned from there */
 #define yield_from(f, ...) \
   ({ \
     auto h = f(__VA_ARGS__).h_; \

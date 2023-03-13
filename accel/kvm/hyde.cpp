@@ -268,7 +268,7 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   if (details->orig_syscall->has_retval) {
     printf("\n***Return from no-op SC in %lx with rv=%lx\n", asid, retval);
   } else {
-    details->retval = retval;
+    details->last_sc_retval = retval;
     printf("Return from injected syscall in %lx with rv=%lx. Advance coopter:\n", asid, retval);
     details->coopter(); // Advance - will have access to the just returned value
     dprintf("\t[End of subsequent step]\n");

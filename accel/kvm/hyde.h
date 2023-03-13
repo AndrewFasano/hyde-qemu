@@ -15,7 +15,7 @@ typedef struct _asid_details {
   struct kvm_regs orig_regs;
   hsyscall *orig_syscall;
   void* cpu;
-  long unsigned int retval;
+  long unsigned int last_sc_retval;
 #ifdef DEBUG
   unsigned int injected_callno; // Debug only
 #endif

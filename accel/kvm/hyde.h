@@ -28,7 +28,7 @@ typedef struct _asid_details {
   std::function<void(struct kvm_regs*)> *modify_on_ret;
 
   std::function<void(_asid_details*, void*, unsigned long, unsigned long, unsigned long)> *on_ret;
-  //hsyscall scratch;
+  hsyscall scratch; // TODO: get rid of this, only used in outdated code
 } asid_details;
 
 

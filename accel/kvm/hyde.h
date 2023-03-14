@@ -60,6 +60,7 @@ void dump_regs(struct kvm_regs r);
 typedef SyscCoro(create_coopt_t)(asid_details*);
 typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int, unsigned int);
 
+bool translate_gva(asid_details *r, ga* gva, uint64_t* hva);
 // Coroutine helpers - HyDE programs can yield_from these and the helpers can inject
 // more syscalls if they'd like
 SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size);

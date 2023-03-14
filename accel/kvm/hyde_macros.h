@@ -100,9 +100,8 @@
 /* Yield_syscall yields a syscall, then gets retval after it's set on sysret in our asid_details */
 #define yield_syscall(r, callno, ...) \
 ({ \
-  hsyscall hsc; \
-  _build_syscall(&hsc, callno, NARGS(__VA_ARGS__) __VA_OPT__(,) __VA_ARGS__, NULL); \
-  (co_yield hsc); \
+  _build_syscall(&r->scratch, callno, NARGS(__VA_ARGS__) __VA_OPT__(,) __VA_ARGS__, NULL); \
+  (co_yield r->scratch); \
   r->last_sc_retval; \
 })
 

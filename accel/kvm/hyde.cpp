@@ -213,7 +213,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   sysc.nargs = (unsigned int)-1;
   auto &promise = a->coopter.promise();
 
-  if (!a->coopter.done() && !promise.did_return) {
+  if (!a->coopter.done()) {
     // We have something to inject
     sysc = promise.value_;
     dprintf("We have something to inject in %lx at PC %lx:\n\t", asid, pc);
@@ -267,13 +267,15 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   // syscall, it can set orig_syscall->retval and orig_syscall->has_retval
   // Then we'll just set this to the retval on the sysret
   if (details->orig_syscall->has_retval) {
-    printf("\n***Return from no-op SC in %lx with rv=%lx\n", asid, retval);
+    dprintf("\n***Return from no-op (er, actually %lu) SC in %lx with rv=%lx\n", details->orig_syscall->callno, asid, retval);
   } else {
     details->last_sc_retval = retval;
     dprintf("Return from injected syscall in %lx with rv=%lx. Advance coopter:\n", asid, retval);
-    details->coopter(); // Advance - will have access to the just returned value
-    dprintf("\t[End of subsequent step]\n");
   }
+  // If we set has_retval, it's in a funky state - we need to advance it so it will finish, otherwise we'll
+  // keep yielding the last (no-op) syscall over and over again
+  details->coopter(); // Advance - will have access to the just returned value
+  dprintf("\t[End of subsequent step]\n");
 
   struct kvm_regs new_regs;
   memcpy(&new_regs, &details->orig_regs, sizeof(struct kvm_regs));
@@ -293,7 +295,7 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
       // This is how we'd do INJECT_SC_A, ORIG_SC, INJECT_SC_B and
       // pretend nothign was injected
       new_regs.rax = details->orig_syscall->retval;
-      dprintf("Change return to be %x\n", details->orig_syscall->retval);
+      printf("Change return in %lx, %ld to be %lx\n", asid, cpu_id, details->orig_syscall->retval);
     } else {
       // We weren't told the orig_syscall has a retval, that means the last
       // return value shoudl be what we pass back. This is how we'd do
@@ -308,7 +310,7 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
       /// XXX: eflags is also changed, but that's not so important? Also not sure how to cleanly restore
     }
 
-    if (details->custom_return != 0) {
+    if (details->custom_return != 0) { // Custom return *address*
       new_regs.rip = details->custom_return;
     } else {
       new_regs.rip = pc; // XXX we *do* need to explicitly set this to
@@ -317,13 +319,13 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
                          // I assume this is because of a delay with KVM updating
                          // registers, not because there's more to do in the LSTAR
                          // kernel code.
-      }
+    }
 
     details->coopter.destroy();
     active_details.erase({asid, cpu_id});
   } else {
-    assert(!details->coopter.promise().did_return);
-    dprintf("Not done - go back to %lx\n", pc-2);
+    //assert(!details->coopter.promise().did_return);
+    dprintf("Not done in %lx, %ld - go back to %lx\n", asid, cpu_id, pc-1);
     new_regs.rip = pc-2; // Take it back now, y'all
   }
   assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &new_regs) == 0);
@@ -587,40 +589,79 @@ SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size) {
   // and store them in the buffer pointed to by out. If out is NULL,
   // we allocate it
 
-  uint64_t hva;
+  uint64_t hva = 0;
 
   if (!translate_gva(r, gva, &hva)) {
       yield_syscall(r, __NR_access, (__u64)gva, 0);
       if (!translate_gva(r, gva, &hva)) {
-        co_return -1; // Failure, even after retry
+        yield_syscall(r, __NR_access, (__u64)gva, 0); // Try again
+        if (!translate_gva(r, gva, &hva)) {
+          co_return -1; // Failure, even after two retries?
+        }
       }
   }
 
+  //printf("Writing %lu bytes of data to %lx - %lx\n",  size, (uint64_t)out, (uint64_t)out + size);
   memcpy((uint64_t*)out, (void*)hva, size);
   co_return 0;
 }
 
 
+#define PAGE_SIZE 1024
 /*
  * Copy size bytes from a guest virtual address into a host buffer, re-issue
  * translation requests as necessary, guaranteed to work so long as address through
  * address + size are mappable
  */
 SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva_base, size_t size) {
+
+  ga* gva_end = (ga*)((uint64_t)gva_base + size);
+  uint64_t gva_start_page = (uint64_t)gva_base  & ~(PAGE_SIZE - 1);
+  //uint64_t gva_end_page = (uint64_t)gva_end  & ~(PAGE_SIZE - 1);
+  uint64_t first_page_size = std::min((uint64_t)gva_base - gva_start_page, (uint64_t)size);
+
+  // Copy first page up to alignment (or maybe even end!)
+  //printf("Read up to %lu bytes into hva %lx from gva %lx\n", first_page_size, (uint64_t)out, (uint64_t)gva_base);
+  if (yield_from(ga_memcpy_one, r, out, gva_base, first_page_size) == -1) {
+    printf("First page read fails\n");
+    co_return -1;
+  }
+
+  gva_base += first_page_size;
+  out = (void*)((uint64_t)out + first_page_size);
+
+  while ((uint64_t)gva_base < (uint64_t)gva_end) {
+    uint64_t this_sz = std::min((uint64_t)PAGE_SIZE, (uint64_t)gva_end - (uint64_t)gva_base);
+      //printf("SUBSEQUENT read (Still need %lx bytes) up to %lu bytes into hva %lx from gva %lx\n",
+      //(uint64_t)gva_end - (uint64_t)gva_base, this_sz, (uint64_t)out, (uint64_t)gva_base);
+
+    if (yield_from(ga_memcpy_one, r, out, gva_base, this_sz) == -1) {
+    printf("Subsequent page read fails\n");
+      co_return -1;
+    }
+    gva_base += this_sz;
+    out = (void*)((uint64_t)out + this_sz);
+  }
+  co_return 0;
+
+  #if 0
   // Let's read from address to next page, then read pages? This is still a bit of a lazy implementation,
   // really we should be like binary searching
 
+
+  // Given address X that lies somewhere between two pages, and say we want the subsequent page:
+  // | page1 start     X      | page2 start     | page 3 start
+
+  // First we calculate page1 start, translate it, calculate the offset of X into page one
+  // and copy the number of bytes from X to the end of page 1 into the buffer
+
   #define PAGE_SIZE 0x1000uL
-  uint64_t first_offset = (uint64_t)gva_base % PAGE_SIZE;
+  uint64_t start_offset = (uint64_t)gva_base & (PAGE_SIZE-1);
+  ga* first_page = (ga*)((uint64_t)gva_base & ~(PAGE_SIZE-1));
 
-  //printf("ga_memcpy: request for %lx bytes at %lx\n", size, (uint64_t)gva_base);
-
-  if (first_offset != 0) {
-    ga* first_page = (ga*)((uint64_t)gva_base &~ (PAGE_SIZE - 1));
+  if (first_page != gva_base) {
+    // Original address wasn't page aligned
     uint64_t hva;
-
-    //printf("ga_memcpy: first_offset = 0x%lx, first_page = %lx, first size=%lx\n", first_offset, (uint64_t)first_page, std::min((ulong)size, (PAGE_SIZE - first_offset)));
-
     if (!translate_gva(r, first_page, &hva)) {
         yield_syscall(r, __NR_access, (__u64)first_page, 0);
         if (!translate_gva(r, gva_base, &hva)) {
@@ -630,13 +671,15 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva_base, size_t size) {
     // Sanity check, should be able to translate requested address now that we have the page?
     assert(can_translate_gva(r->cpu, gva_base));
 
-    memcpy((uint64_t*)out, (void*)(hva + first_offset), std::min((ulong)size, (PAGE_SIZE - first_offset)));
-    //printf("ga_memcpy: first copy from host %lx\n", hva + first_offset);
+    //printf("\tga_memcpy: first copy. guest first page %lx maps to host %lx, reading from host at %lx\n", (uint64_t)first_page, hva, hva + start_offset);
+    memcpy((uint64_t*)out, (void*)(hva + start_offset), std::min((ulong)size, (ulong)(PAGE_SIZE - start_offset)));
   }
 
   // Now copy page-aligned memory, one page at a time
-  for (ga* page = gva_base + first_offset; page < gva_base + size; page += PAGE_SIZE) {
-    //printf("ga_memcpy: subsequent page = %p, size=%lu\n", page, std::min((ulong)size, PAGE_SIZE));
+  for (ga* page = gva_base + start_offset; page < gva_base + size; page += PAGE_SIZE) {
+    ulong remsize  = std::min((ulong)PAGE_SIZE, (ulong)((gva_base + size) - page));
+
+    printf("\tga_memcpy: subsequent page = %p, size=%lu\n", page, remsize);
     uint64_t hva;
     if (!translate_gva(r, page, &hva)) {
         yield_syscall(r, __NR_access, (__u64)page, 0);
@@ -645,10 +688,12 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva_base, size_t size) {
         }
     }
 
-    memcpy((uint64_t*)out+(page-gva_base), (void*)hva, std::min((ulong)size, PAGE_SIZE));
+    printf("\tga_memcpy: subsequent copy of %lu bytes from %lx to %lx\n", remsize, hva, (uint64_t)out+(page-gva_base));
+    memcpy((uint64_t*)out+(page-gva_base), (void*)hva, remsize);
   }
 
   co_return 0;
+  #endif
 }
 
 /* Given a host buffer, write it to a guest virtual address. The opposite

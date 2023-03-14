@@ -45,9 +45,10 @@ struct HydeCoro {
   struct promise_type {
     T value_;
     uint64_t retval;
-    bool did_return = false;
 
-    ~promise_type() { }
+    ~promise_type() {
+      //printf("Coro destroyed\n");
+    }
 
     HydeCoro<T> get_return_object() {
       return {
@@ -59,10 +60,9 @@ struct HydeCoro {
     void unhandled_exception() {}
 
     // Regular yield, returns an hsyscall value
-    std::suspend_always yield_value(hsyscall value) {
+    std::suspend_always yield_value(T value) {
       value_ = value;
       return {};
-      did_return = false;
       //printf("Yielding a value\n");
     }
 
@@ -70,13 +70,15 @@ struct HydeCoro {
     void return_value(int value) {
       retval = value;
       value_ = {0};
-      did_return = true; // Do we need this? Can't tell if these are staying alive too long or there are just lots
       //printf("Returning a value: %ld\n", retval);
     };
   };
 
   std::coroutine_handle<promise_type> h_;
 };
+
+
+
 
 typedef HydeCoro<hsyscall> SyscCoro;
 typedef std::coroutine_handle<HydeCoro<hsyscall>::promise_type> coopter_t;

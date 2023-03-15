@@ -14,6 +14,6 @@ typedef struct {
   bool has_retval;
 } hsyscall;
 
-typedef uint64_t ga; // Guest pointer - shouldnt't read directly
+typedef char ga; // Guest pointer - always use as `ga*` or you'll get truncation issues
 
 #endif

@@ -65,6 +65,7 @@ bool translate_gva(asid_details *r, ga* gva, uint64_t* hva);
 // more syscalls if they'd like
 SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size);
 SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva, size_t size);
+SyscCoro ga_memread(asid_details* r, void* out, ga* gva, size_t size);
 SyscCoro ga_memwrite(asid_details* r, ga* gva, void* in, size_t size);
 //SyscCoro ga_memmove(asid_details* r, ga* dest, void* src, size_t size);
 SyscCoro ga_map(asid_details* r,  ga* gva, void** host, size_t min_size);

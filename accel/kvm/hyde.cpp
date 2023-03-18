@@ -608,6 +608,13 @@ SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size) {
 
 
 #define PAGE_SIZE 1024
+/* Memread will copy guest data to a host buffer, paging in memory as needed.
+ * It's an alias for ga_memcpy but that might go away later in favor of this name.
+ */
+SyscCoro ga_memread(asid_details* r, void* out, ga* gva_base, size_t size) {
+  co_return yield_from(ga_memcpy, r, out, gva_base, size);
+}
+
 /*
  * Copy size bytes from a guest virtual address into a host buffer, re-issue
  * translation requests as necessary, guaranteed to work so long as address through

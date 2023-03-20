@@ -59,6 +59,8 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
 #define N_STACK 4
 
 #else
+    // TODO: this is stupid.
+
     if (sysc->nargs > 0) set_ARG0(r, sysc->args[0]);
     if (sysc->nargs > 1) set_ARG1(r, sysc->args[1]);
     if (sysc->nargs > 2) set_ARG2(r, sysc->args[2]);
@@ -72,6 +74,7 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
 		if (sysc->nargs > N_STACK) {
 			printf("Syscall has %d args, > max %d\n", sysc->nargs, N_STACK);
       assert(0 && "untested"); // TODO test
+#if 0
       unsigned long int *stack;
 
       // XXX: Do we need to unshift later? I don't think so, because we restore regs on ret
@@ -88,6 +91,7 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
         printf("\tstack[%ld] = arg[%ld] = %lx\n", sysc->nargs-i, i, sysc->args[i]);
         stack[(sysc->nargs + 4)-i] = sysc->args[i];
       }
+#endif
     }
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &r) == 0);
 
@@ -148,7 +152,6 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
       .orig_syscall = new hsyscall {
         .callno = CALLNO(r),
         .nargs = 6,
-        .args = { ARG0(r), ARG1(r), ARG2(r), ARG3(r), ARG4(r), ARG5(r) },
         .has_retval = false,
       },
       .cpu = cpu,
@@ -156,6 +159,21 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
       .use_orig_regs = false,
       .custom_return = 0,
     };
+
+    // This is stupid
+    //.args = { ARG0(r), ARG1(r), ARG2(r), ARG3(r), ARG4(r), ARG5(r) },
+    a->orig_syscall->args[0].value = ARG0(r);
+    a->orig_syscall->args[0].is_ptr = false;
+    a->orig_syscall->args[1].value = ARG1(r);
+    a->orig_syscall->args[1].is_ptr = false;
+    a->orig_syscall->args[2].value = ARG2(r);
+    a->orig_syscall->args[2].is_ptr = false;
+    a->orig_syscall->args[3].value = ARG3(r);
+    a->orig_syscall->args[3].is_ptr = false;
+    a->orig_syscall->args[4].value = ARG4(r);
+    a->orig_syscall->args[4].is_ptr = false;
+    a->orig_syscall->args[5].value = ARG5(r);
+    a->orig_syscall->args[5].is_ptr = false;
 
     memcpy(&a->orig_regs, &r, sizeof(struct kvm_regs));
 
@@ -402,87 +420,6 @@ extern "C" void hyde_init(void) {
   //assert(try_load_coopter(path));
 }
 
-// Gross set of build_syscall functions without vaargs
-#if 0
-static void _build_syscall(hsyscall* s, unsigned int callno, int nargs,
-    int unsigned long arg0, int unsigned long arg1, int unsigned long arg2,
-    int unsigned long arg3, int unsigned long arg4, int unsigned long arg5) {
-  s->callno = callno;
-  s->nargs = nargs;
-  if (nargs > 0) s->args[0] = arg0;
-  if (nargs > 1) s->args[1] = arg1;
-  if (nargs > 2) s->args[2] = arg2;
-  if (nargs > 3) s->args[3] = arg3;
-  if (nargs > 4) s->args[4] = arg4;
-  if (nargs > 5) s->args[5] = arg5;
-}
-void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
-    int unsigned long arg1, int unsigned long arg2, int unsigned long arg3, int unsigned long arg4,
-    int unsigned long arg5) {
-  _build_syscall(s, callno, 6, arg0, arg1, arg2, arg3, arg4, arg5);
-}
-
-void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
-    int unsigned long arg1, int unsigned long arg2, int unsigned long arg3, int unsigned long arg4) {
-  _build_syscall(s, callno, 5, arg0, arg1, arg2, arg3, arg4, 0);
-}
-
-void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
-    int unsigned long arg1, int unsigned long arg2, int unsigned long arg3) {
-  _build_syscall(s, callno, 4, arg0, arg1, arg2, arg3, 0, 0);
-}
-
-void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
-    int unsigned long arg1, int unsigned long arg2) {
-  _build_syscall(s, callno, 3, arg0, arg1, arg2, 0, 0, 0);
-}
-
-void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0,
-    int unsigned long arg1) {
-  _build_syscall(s, callno, 2, arg0, arg1, 0, 0, 0, 0);
-}
-
-void build_syscall(hsyscall* s, unsigned int callno, int unsigned long arg0) {
-  _build_syscall(s, callno, 1, arg0, 0, 0, 0, 0, 0);
-}
-
-void build_syscall(hsyscall* s, unsigned int callno) {
-  _build_syscall(s, callno, 0, /*args:*/0, 0, 0, 0, 0, 0);
-}
-#endif
-
-// NARGS macro from https://stackoverflow.com/a/33349105/2796854
-#define NARGS(...) std::tuple_size<decltype(std::make_tuple(__VA_ARGS__))>::value
-
-
-
-#if 0
-// yield and build syscall don't take number of arguments, we calculate at compile time
-#define build_syscall(h, callno, ...)  (_build_syscall(h, callno, NARGS(__VA_ARGS__), __VA_ARGS__))
-//#define yield_syscall(r, callno, ...) (build_syscall(&r->scratch, callno, __VA_ARGS__), (co_yield r->scratch), r->retval)
-
-/* Yield_syscall yields a syscall, then gets retval after it's set on sysret in our asid_details */
-#define yield_syscall(r, callno, ...) \
-({ \
-  _build_syscall(&r->scratch, callno, NARGS(__VA_ARGS__) __VA_OPT__(,) __VA_ARGS__, NULL); \
-  (co_yield r->scratch); \
-  r->last_sc_retval; \
-})
-#endif
-
-void _build_syscall(hsyscall* s, uint callno, int nargs, ...) {
-  s->callno = callno;
-  s->nargs = nargs;
-  // for each va arg
-  va_list args;
-  va_start(args, nargs);
-  for (int i = 0; i < nargs; i++) {
-    s->args[i] = va_arg(args, uint64_t);
-  }
-  va_end(args);
-}
-
-
 __u64 translate(void *cpu, __u64 gva, int* error) {
   struct kvm_translation trans = {
     .linear_address = gva
@@ -524,7 +461,7 @@ int setregs(void *cpu, struct kvm_regs *regs) {
   return kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &regs) == 0;
 }
 
-bool can_translate_gva(void*cpu, ga* gva) {
+bool can_translate_gva(void*cpu, uint64_t gva) {
   struct kvm_translation trans = { .linear_address = (__u64)gva };
 
   // Requesting the translation shouldn't ever fail, even though
@@ -538,7 +475,7 @@ bool can_translate_gva(void*cpu, ga* gva) {
 /* Given a GVA, try to translate it to a host address.
  * return indicates success. If success, host address 
  * will be set in hva argument. */
-bool translate_gva(asid_details *r, ga* gva, uint64_t* hva) {
+bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva) {
   if (!can_translate_gva(r->cpu, gva)) {
     return false;
   }
@@ -553,7 +490,7 @@ bool translate_gva(asid_details *r, ga* gva, uint64_t* hva) {
 /*
  * Copy size bytes from a guest virtual address into a host buffer.
  */
-SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size) {
+SyscCoro ga_memcpy_one(asid_details* r, void* out, uint64_t gva, size_t size) {
   // We wish to read size bytes from the guest virtual address space
   // and store them in the buffer pointed to by out. If out is NULL,
   // we allocate it
@@ -561,9 +498,9 @@ SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size) {
   uint64_t hva = 0;
 
   if (!translate_gva(r, gva, &hva)) {
-      yield_syscall(r, access, (__u64)gva, 0);
+      yield_syscall_raw(r, access, (uint64_t)gva, 0);
       if (!translate_gva(r, gva, &hva)) {
-        yield_syscall(r, access, (__u64)gva, 0); // Try again
+        yield_syscall_raw(r, access, (uint64_t)gva, 0); // Try again
         if (!translate_gva(r, gva, &hva)) {
           co_return -1; // Failure, even after two retries?
         }
@@ -580,7 +517,7 @@ SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size) {
 /* Memread will copy guest data to a host buffer, paging in memory as needed.
  * It's an alias for ga_memcpy but that might go away later in favor of this name.
  */
-SyscCoro ga_memread(asid_details* r, void* out, ga* gva_base, size_t size) {
+SyscCoro ga_memread(asid_details* r, void* out, uint64_t gva_base, size_t size) {
   co_return yield_from(ga_memcpy, r, out, gva_base, size);
 }
 
@@ -589,9 +526,9 @@ SyscCoro ga_memread(asid_details* r, void* out, ga* gva_base, size_t size) {
  * translation requests as necessary, guaranteed to work so long as address through
  * address + size are mappable
  */
-SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva_base, size_t size) {
+SyscCoro ga_memcpy(asid_details* r, void* out, uint64_t gva_base, size_t size) {
 
-  ga* gva_end = (ga*)((uint64_t)gva_base + size);
+  uint64_t gva_end = (uint64_t)((uint64_t)gva_base + size);
   uint64_t gva_start_page = (uint64_t)gva_base  & ~(PAGE_SIZE - 1);
   //uint64_t gva_end_page = (uint64_t)gva_end  & ~(PAGE_SIZE - 1);
   uint64_t first_page_size = std::min((uint64_t)gva_base - gva_start_page, (uint64_t)size);
@@ -633,7 +570,7 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva_base, size_t size) {
 
   #define PAGE_SIZE 0x1000uL
   uint64_t start_offset = (uint64_t)gva_base & (PAGE_SIZE-1);
-  ga* first_page = (ga*)((uint64_t)gva_base & ~(PAGE_SIZE-1));
+  uint64_t first_page = (uint64_t)((uint64_t)gva_base & ~(PAGE_SIZE-1));
 
   if (first_page != gva_base) {
     // Original address wasn't page aligned
@@ -652,7 +589,7 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva_base, size_t size) {
   }
 
   // Now copy page-aligned memory, one page at a time
-  for (ga* page = gva_base + start_offset; page < gva_base + size; page += PAGE_SIZE) {
+  for (uint64_t page = gva_base + start_offset; page < gva_base + size; page += PAGE_SIZE) {
     ulong remsize  = std::min((ulong)PAGE_SIZE, (ulong)((gva_base + size) - page));
 
     printf("\tga_memcpy: subsequent page = %p, size=%lu\n", page, remsize);
@@ -674,14 +611,14 @@ SyscCoro ga_memcpy(asid_details* r, void* out, ga* gva_base, size_t size) {
 
 /* Given a host buffer, write it to a guest virtual address. The opposite
  * of ga_memcpy */
-SyscCoro ga_memwrite(asid_details* r, ga* gva, void* in, size_t size) {
+SyscCoro ga_memwrite(asid_details* r, uint64_t gva, void* in, size_t size) {
   // TODO: re-issue translation requests as necessary
   uint64_t hva;
   assert(size != 0);
 
   if (!translate_gva(r, gva, &hva)) {
       //yield_syscall(r, __NR_access, (__u64)gva, 0);
-      yield_syscall(r, access, (__u64)gva, 0);
+      yield_syscall_raw(r, access, (uint64_t)gva, 0); // XXX: don't auto-map arguments! And don't typecheck!
       if (!translate_gva(r, gva, &hva)) {
         co_return -1; // Failure, even after retry
       }
@@ -692,7 +629,7 @@ SyscCoro ga_memwrite(asid_details* r, ga* gva, void* in, size_t size) {
   co_return 0;
 }
 
-SyscCoro ga_map(asid_details* r,  ga* gva, void** host, size_t min_size) {
+SyscCoro ga_map(asid_details* r,  uint64_t gva, void** host, size_t min_size) {
   // Set host to a host virtual address that maps to the guest virtual address gva
 
   // TODO: Assert that gva+0 and gva+min_size can both be reached
@@ -705,7 +642,7 @@ SyscCoro ga_map(asid_details* r,  ga* gva, void** host, size_t min_size) {
 
   // Translation failed on base address - not in our TLB, maybe paged out
   if (trans.physical_address == (unsigned long)-1) {
-      yield_syscall(r, access, _gva, 0);
+      yield_syscall_raw(r, access, _gva, 0);
 
       // Now retry. if we fail again, bail
       //printf("Retrying to read %llx\n", trans.linear_address);

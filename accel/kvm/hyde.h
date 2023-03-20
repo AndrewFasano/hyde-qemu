@@ -77,4 +77,11 @@ extern "C" {
   create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc, unsigned int asid);
 }
 
+// XXX WIP
+asid_details* hack;
+template <long SyscallNumber, typename Function, typename... Args>
+hsyscall* inject_syscall(Function syscall_func, Args... args);
+//#define yield_syscall(details, func, ...) 0; // XXX
+//#define yield_syscall2(details, func, ...) hack=details, inject_syscall<SYS_##func>(::func, ##__VA_ARGS__)
+
 #endif

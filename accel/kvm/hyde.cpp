@@ -16,6 +16,11 @@
 #include <string>
 #include <vector>
 
+#include <tuple>
+#include <type_traits>
+#include <unistd.h>
+#include <sys/syscall.h>
+
 #include "qemu/compiler.h"
 #include "hyde.h"
 #include "hyde_internal.h"
@@ -446,6 +451,25 @@ void build_syscall(hsyscall* s, unsigned int callno) {
 }
 #endif
 
+// NARGS macro from https://stackoverflow.com/a/33349105/2796854
+#define NARGS(...) std::tuple_size<decltype(std::make_tuple(__VA_ARGS__))>::value
+
+
+
+#if 0
+// yield and build syscall don't take number of arguments, we calculate at compile time
+#define build_syscall(h, callno, ...)  (_build_syscall(h, callno, NARGS(__VA_ARGS__), __VA_ARGS__))
+//#define yield_syscall(r, callno, ...) (build_syscall(&r->scratch, callno, __VA_ARGS__), (co_yield r->scratch), r->retval)
+
+/* Yield_syscall yields a syscall, then gets retval after it's set on sysret in our asid_details */
+#define yield_syscall(r, callno, ...) \
+({ \
+  _build_syscall(&r->scratch, callno, NARGS(__VA_ARGS__) __VA_OPT__(,) __VA_ARGS__, NULL); \
+  (co_yield r->scratch); \
+  r->last_sc_retval; \
+})
+#endif
+
 void _build_syscall(hsyscall* s, uint callno, int nargs, ...) {
   s->callno = callno;
   s->nargs = nargs;
@@ -480,63 +504,8 @@ __u64 translate(void *cpu, __u64 gva, int* error) {
 
 
 __u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
-  // Given a GVA, return either a HVA or return -1 with sc set to a syscall which should be run
-  // If provided SC is null will assert
-  struct kvm_translation trans = {
-    .linear_address = gva
-  };
-  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
-
-  // Couldn't translate, setup SC to be something to page this in
-  if (trans.physical_address == (unsigned long)-1) {
-    if (sc != nullptr) {
-#ifdef WINDOWS
-      // Inject NtLoadDriver(gva). XXX will have side effects if gva is a pointer to
-      // a UNICODE_STRING struct with a value that starts with
-      // '\\registry\\machine\\SYSTEM\\CurrentControlSet\\Services\\' and has Type=1
-      // XXX Might not even read pointer if process doesn't have permissions to load drivers?
-      //build_syscall(sc, 0x0105, gva);
-
-
-      // NtUnmapViewOfSection - Will it work with invalid handle?
-      //build_syscall(sc, 0x002a, 0, gva); // this just doesn't ever work?
-
-
-      /* NtReadVirtualMemory
-      IN HANDLE               ProcessHandle,
-      IN PVOID                BaseAddress,
-      OUT PVOID               Buffer,
-      IN ULONG                NumberOfBytesToRead,
-      OUT PULONG              NumberOfBytesReaded OPTIONAL
-      */
-      //build_syscall(sc, 0x3f,
-      //    -1, // HANDLE = self (-1)
-      //    gva, // Pointer to guest buffer
-      //    0,   // Out buffer is NULL
-      //    100);  // Num bytes to read is 0
-
-      // NtLoadKey - Works well, except when it returns STATUS_PRIVILEGE_NOT_HELD
-      // because process lacks SE_RESTORE_PRIVILEGE - frequently...
-      //build_syscall(sc, 0x0107, gva, gva);
-
-      // NtDeleteFile - This is scary, what if the buffer somehow
-      // was of the right format to get deleted?
-      build_syscall(sc, 0x00d2, gva);
-
-#else
-      build_syscall(sc, __NR_access, (uint64_t)gva, 0);
-#endif
-      return (__u64)-1;
-    } else {
-      //printf("[HYDE] Error, could not translate 0x%llx and not able to inject a syscall\n", gva);
-      return (__u64)-1;
-    }
-  }
-
-  // Successfully translated GVA to GPA, now translate to HVA
-  __u64 phys_addr;
-  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &phys_addr) == 1);
-  return phys_addr;
+  printf("DEPRECATED: memread(gva=%llx, sc=%p)\n", gva, sc);
+  return (__u64)-1;
 }
 
 int getregs(asid_details *r, struct kvm_regs *regs) {
@@ -592,9 +561,9 @@ SyscCoro ga_memcpy_one(asid_details* r, void* out, ga* gva, size_t size) {
   uint64_t hva = 0;
 
   if (!translate_gva(r, gva, &hva)) {
-      yield_syscall(r, __NR_access, (__u64)gva, 0);
+      yield_syscall(r, access, (__u64)gva, 0);
       if (!translate_gva(r, gva, &hva)) {
-        yield_syscall(r, __NR_access, (__u64)gva, 0); // Try again
+        yield_syscall(r, access, (__u64)gva, 0); // Try again
         if (!translate_gva(r, gva, &hva)) {
           co_return -1; // Failure, even after two retries?
         }
@@ -711,7 +680,8 @@ SyscCoro ga_memwrite(asid_details* r, ga* gva, void* in, size_t size) {
   assert(size != 0);
 
   if (!translate_gva(r, gva, &hva)) {
-      yield_syscall(r, __NR_access, (__u64)gva, 0);
+      //yield_syscall(r, __NR_access, (__u64)gva, 0);
+      yield_syscall(r, access, (__u64)gva, 0);
       if (!translate_gva(r, gva, &hva)) {
         co_return -1; // Failure, even after retry
       }
@@ -735,7 +705,7 @@ SyscCoro ga_map(asid_details* r,  ga* gva, void** host, size_t min_size) {
 
   // Translation failed on base address - not in our TLB, maybe paged out
   if (trans.physical_address == (unsigned long)-1) {
-      yield_syscall(r, __NR_access, _gva, 0);
+      yield_syscall(r, access, _gva, 0);
 
       // Now retry. if we fail again, bail
       //printf("Retrying to read %llx\n", trans.linear_address);

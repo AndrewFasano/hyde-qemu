@@ -89,21 +89,6 @@
 #define map_guest_pointer(details, varname, ptr) __memread(varname, details, ptr) 
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return -1;};
 
-// yield and build syscall don't take number of arguments, we calculate at compile time
-// NARGS macro from https://stackoverflow.com/a/33349105/2796854
-#define NARGS(...) std::tuple_size<decltype(std::make_tuple(__VA_ARGS__))>::value
-#define build_syscall(h, callno, ...)  (_build_syscall(h, callno, NARGS(__VA_ARGS__), __VA_ARGS__))
-//#define yield_syscall(r, callno, ...) (build_syscall(&r->scratch, callno, __VA_ARGS__), (co_yield r->scratch), r->retval)
-
-// Make macros work when variadic arguments are empty. https://stackoverflow.com/a/5897216
-//#define VA_ARGS(...) , ## __VA_ARGS__
-/* Yield_syscall yields a syscall, then gets retval after it's set on sysret in our asid_details */
-#define yield_syscall(r, callno, ...) \
-({ \
-  _build_syscall(&r->scratch, callno, NARGS(__VA_ARGS__) __VA_OPT__(,) __VA_ARGS__, NULL); \
-  (co_yield r->scratch); \
-  r->last_sc_retval; \
-})
 
 /* Yield_from runs a coroutine, yielding the syscalls it yields, then finally returns a value that's co_returned from there */
 #define yield_from(f, ...) \

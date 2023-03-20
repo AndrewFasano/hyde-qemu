@@ -235,6 +235,8 @@ SyscCoro map_args_from_guest_stack(asid_details* details, uint64_t stack_addr, h
   details->last_sc_retval;                                    \
 })
 
+#define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return -1;};
+
 // Type signature for a function *hyde programs* must implement. Implemenations should
 // returns a pointer to a local (extern C) coroutine function if the syscall should be
 // co-opted, otherwise NULL

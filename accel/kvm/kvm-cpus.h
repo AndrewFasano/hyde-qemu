@@ -22,9 +22,9 @@ bool kvm_supports_guest_debug(void);
 int kvm_insert_breakpoint(CPUState *cpu, int type, hwaddr addr, hwaddr len);
 int kvm_remove_breakpoint(CPUState *cpu, int type, hwaddr addr, hwaddr len);
 void kvm_remove_all_breakpoints(CPUState *cpu);
-int kvm_host_addr_from_physical_physical_memory(hwaddr gpa, hwaddr *phys_addr);
+int kvm_host_addr_from_physical_memory(hwaddr gpa, hwaddr *phys_addr);
 // Provided by hyde.cpp
-extern void hyde_init(void);
+//extern void hyde_init(void);
 extern void on_syscall(void*, long unsigned int, long unsigned int, long unsigned int, long unsigned int, long unsigned int);
 extern void on_sysret(void*, long unsigned int, long unsigned int, long unsigned int);
 

@@ -1,25 +1,36 @@
+#ifndef HYDE_H
+#define HYDE_H
+
+#include <sys/types.h>
+#include <cstring>
+#include <string>
+#include <linux/kvm.h>
 #include <coroutine>
 
-#ifndef HYDE_COMMON_H
-#define HYDE_COMMON_H
+// This file provides common datatypes used by both KVM-hyde and hyde programs.
+// Additionally it provides prototypes for KVM-hyde functions that may be used by hyde programs.
+
+//#define WINDOWS
+//#define HYDE_DEBUG
 
 struct hsyscall_arg {
   uint64_t value; // host_pointer OR constant
   bool is_ptr; // if true, value is a host pointer
-  uint64_t guest_ptr; // ignored if !is_ptr
-  unsigned int size; // ignored if !is_ptr
+  uint64_t guest_ptr; // ignored if !is_ptr, otherwise the guest pointer that this host pointer is mapped to
+  unsigned int size; // ignored if !is_ptr, otherwise the size of the struct pointed to
 };
 
-// hsyscall is a struct that represents a system call that we will simulate execution of.
-// Before the syscall is simulated, it should be populated with callno, nargs, and args.
-// After the syscall is simulated, retval will store the return value and has_retval will be set to true.
+/* hsyscall is a struct that represents a system call along with its arguments.
+ * An hsyscall can be injected into the guest so long as callno, nargs and args[0...nargs-1] are set.
+ * After an hsyscall is injected, retval will bet set to the return value of the syscall and has_retval will be set to true.
+*/
 typedef struct {
   uint64_t callno; // System call number
   unsigned int nargs; // Number of arguments
  hsyscall_arg args[6]; // Arguments for the syscall
 
-  // After we simulate
-  uint64_t retval; // Only used when co-opting
+  // After we run
+  uint64_t retval;
   bool has_retval;
 } hsyscall;
 
@@ -30,9 +41,7 @@ struct HydeCoro {
     T value_;
     uint64_t retval;
 
-    ~promise_type() {
-      //printf("Coro destroyed\n");
-    }
+    ~promise_type() {}
 
     HydeCoro<T> get_return_object() {
       return {
@@ -71,7 +80,7 @@ typedef std::coroutine_handle<HydeCoro<hsyscall>::promise_type> coopter_t;
  * It also contains a pointer to the original system call that the process was executing.
  * Finally, it contains a pointer to the original registers that the process was executing.
 */
-typedef struct _asid_details {
+struct asid_details {
   coopter_t coopter; // The coroutine that is simulating the process's execution
   struct kvm_regs orig_regs; // The original registers when we started simulating the guest process
   hsyscall *orig_syscall; // The original system call that was about to run in the target process
@@ -87,7 +96,7 @@ typedef struct _asid_details {
   unsigned long custom_return; // If set to a non-zero value, we will set the guest's program counter to this address after coopter finishes
 
   //std::function<void(_asid_details*, void*, unsigned long, unsigned long, unsigned long)> *on_ret; // Unused
-} asid_details;
+};
 
 
 // create_coopt_t functions are called with a bunch of stuff and return a pointer to a function with type SyscCoro(asid_details*)
@@ -95,5 +104,17 @@ typedef SyscCoro(create_coopt_t)(asid_details*);
 // create_coopt_t is function type that is given a few arguments and returns a function pointer function with type create_coopt_t(asid_details*)
 typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int, unsigned int);
 
+bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva); // Coroutine helpers use this for translation
+int kvm_vcpu_ioctl_ext(void *cpu, int type, ...);
+int kvm_host_addr_from_physical_memory_ext(uint64_t gpa, uint64_t *phys_addr);
+
+#define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return -1;};
+
+// Type signature for a function *hyde programs* must implement. Implemenations should
+// returns a pointer to a local (extern C) coroutine function if the syscall should be
+// co-opted, otherwise NULL
+extern "C" {
+  create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc, unsigned int asid);
+}
 
 #endif

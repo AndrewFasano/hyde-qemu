@@ -22,7 +22,11 @@
 #include <sys/syscall.h>
 
 #include "qemu/compiler.h"
-#include "hyde.h"
+#include "exec/hwaddr.h" // for hwaddr typedef
+//#include "accel/kvm/kvm-cpus.h" // for kvm_host_addr_from_physical_memory
+extern "C" int kvm_host_addr_from_physical_memory(hwaddr gpa, hwaddr *phys_addr);
+
+#include "hyde_common.h"
 #include "hyde_internal.h"
 
 void dprintf(const char *fmt, ...) {
@@ -34,22 +38,127 @@ void dprintf(const char *fmt, ...) {
 #endif
 }
 
-// TODO: make more helpers generators so they can inject syscalls
+// Expose some KVM functions externally
+template <typename... Args>
+int kvm_vcpu_ioctl_ext(void *cpu, int type, Args... args) {
+  return kvm_vcpu_ioctl(cpu, type, args...);
+}
 
-// We should get rid of these...
-__u64 memread(asid_details*, __u64, hsyscall*);
-__u64 translate(void *cpu, __u64 gva, int* status);
+int kvm_host_addr_from_physical_memory_ext(uint64_t gpa, uint64_t *phys_addr) {
+  return kvm_host_addr_from_physical_memory((hwaddr)gpa, (hwaddr*)phys_addr);
+}
 
+void enable_syscall_introspection(void* cpu, int idx) {
+  assert(cpu != nullptr);
+  assert(kvm_vcpu_ioctl_pause_vm(cpu, KVM_HYDE_TOGGLE, 1) == 0);
+}
 
-// TODO: Make this a coroutine so we can yield and wait for a syscall to complete
-// if necessary. - then we can use ga_helpers to access stack based arguments
+void disable_syscall_introspection(void* cpu) {
+  assert(cpu != nullptr);
+  assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 0) == 0);
+}
+
+bool try_load_coopter(std::string path, void* cpu, int idx) {
+  if (coopters.count(path)) {
+    if (idx == 0) {
+      printf("Already have %s capability loaded\n", path.c_str());
+      return false;
+    }
+      return true; // Cap already loaded for 0th CPU
+  }
+  void* handle = dlopen(path.c_str(), RTLD_LAZY);
+  if (handle == NULL) {
+    printf("Could not open capability at %s: %s\n", path.c_str(), dlerror());
+    return false;
+  }
+
+  coopter_f* do_coopt;
+  do_coopt = (coopter_f*)dlsym(handle, "should_coopt");
+  if (do_coopt == NULL) {
+    printf("Could not find should_coopt function in capability: %s\n", dlerror());
+    dlclose(handle);
+    return false;
+  }
+  if (coopters.empty()) {
+    enable_syscall_introspection(cpu, idx);
+  }
+  coopters[path] = *do_coopt;
+  return true;
+}
+
+bool try_unload_coopter(std::string path, void* cpu, int idx) {
+  // TODO: can we also support non-absolute paths?
+  if (!coopters.count(path)) {
+    if (idx == 0) {
+      printf("Capability %s has not been loaded\n", path.c_str());
+      return false;
+    }
+    return true; // Already unloaded for 0th cpu??
+  }
+  coopters.erase(path);
+  if (coopters.empty()) {
+    disable_syscall_introspection(cpu);
+  }
+  return true;
+}
+
+bool kvm_load_hyde_capability(const char* path, void *cpu, int idx) {
+  return try_load_coopter(std::string(path), cpu, idx);
+}
+
+bool kvm_unload_hyde_capability(const char* path, void *cpu, int idx) {
+  return try_unload_coopter(std::string(path), cpu, idx);
+}
+
+int getregs(asid_details *r, struct kvm_regs *regs) {
+  return kvm_vcpu_ioctl(r->cpu, KVM_GET_REGS, regs);
+}
+
+int getregs(void *cpu, struct kvm_regs *regs) {
+  return kvm_vcpu_ioctl(cpu, KVM_GET_REGS, regs);
+}
+
+int setregs(asid_details *r, struct kvm_regs *regs) {
+  return kvm_vcpu_ioctl(r->cpu, KVM_SET_REGS, &regs) == 0;
+}
+
+int setregs(void *cpu, struct kvm_regs *regs) {
+  return kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &regs) == 0;
+}
+
+bool can_translate_gva(void*cpu, uint64_t gva) {
+  struct kvm_translation trans = { .linear_address = (__u64)gva };
+
+  // Requesting the translation shouldn't ever fail, even though
+  // the translated result might be that the translation failed
+  assert(kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &trans) == 0);
+
+  // Translation ok if valid and != -1
+  return (trans.valid && trans.physical_address != (unsigned long)-1);
+}
+
+/* Given a GVA, try to translate it to a host address.
+ * return indicates success. If success, host address 
+ * will be set in hva argument. */
+bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva) {
+  if (!can_translate_gva(r->cpu, gva)) {
+    return false;
+  }
+  // Duplicate some logic from can_translate_gva so we can get the physaddr here
+  struct kvm_translation trans = { .linear_address = (__u64)gva };
+  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
+
+  assert(kvm_host_addr_from_physical_memory(trans.physical_address, (uint64_t*)hva) == 1);
+  return true;
+}
+
+// TODO: could we convert this to a co-routine so it could yield helpers in order to reliably access stack
 void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig) {
     struct kvm_regs r;
     memcpy(&r, orig, sizeof(struct kvm_regs));
     set_CALLNO(r, sysc->callno); // callno is always RAX
                                   // Arguments vary by OS
     //dprintf("Applying syscall to registers:");
-    //dump_syscall(*sysc);
 
 #ifdef WINDOWS
     if (sysc->nargs > 0) r.r10 = sysc->args[0];
@@ -73,30 +182,9 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
     // TODO: test and debug this - what linux syscall has > 6 args?
 		if (sysc->nargs > N_STACK) {
 			printf("Syscall has %d args, > max %d\n", sysc->nargs, N_STACK);
-      assert(0 && "untested"); // TODO test
-#if 0
-      unsigned long int *stack;
-
-      // XXX: Do we need to unshift later? I don't think so, because we restore regs on ret
-      // Above top of stack can have a redzone of 128 bytes - skip that much then add space for args
-      r.rsp -= 0x80; // Fixed size of redzone
-      r.rsp -= 0x8 * (sysc->nargs - 4);
-      printf("Sub'd RSP 0x88: %llx\n", r.rsp);
-
-      // Note this could fail - no easy way to inject a syscall from in this fn
-      stack = (unsigned long int*)memread(details, r.rsp, nullptr);
-      assert((__u64)stack != (__u64)-1 && "whoops: failed to read stack during injection");
-
-      for (size_t i=4; i < sysc->nargs; i++) {
-        printf("\tstack[%ld] = arg[%ld] = %lx\n", sysc->nargs-i, i, sysc->args[i]);
-        stack[(sysc->nargs + 4)-i] = sysc->args[i];
-      }
-#endif
+      assert(0 && "NYI support stack-based arguments"); // TODO test
     }
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &r) == 0);
-
-    //printf("After application, registers are:\n");
-    //dump_regs(r);
 }
 
 bool is_syscall_targetable(int callno, unsigned long asid) {
@@ -180,9 +268,6 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
     // This ends our maybe race condition - we've built the asid_details entry
     active_details[{asid, cpu_id}] = a;
 
-    dprintf("Co-opter starts from: ");
-    dump_syscall(*a->orig_syscall);
-
     // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
     // The value we get in rflags won't match the value that emulate_syscall is putting
     // into rflags - so we compute it ourselves
@@ -197,7 +282,7 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
   return NULL;
 }
 
-extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc,
+void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc,
                            long unsigned int orig_rcx, long unsigned int orig_r11) {
   asid_details *a = NULL;
   bool first = false;
@@ -240,7 +325,6 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
     // We have something to inject
     sysc = promise.value_;
     dprintf("We have something to inject in %lx at PC %lx:\n\t", asid, pc);
-    dump_syscall(sysc);
 
   } else if (first) {
     // Nothing to inject and this is the first syscall
@@ -278,8 +362,7 @@ extern "C" void on_syscall(void *cpu, long unsigned int callno, long unsigned in
   }
 }
 
-extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid,
-                          long unsigned int pc) {
+void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long unsigned int pc) {
   unsigned long cpu_id = get_cpu_id(cpu);
   if (!active_details.contains({asid, cpu_id})) {
     return;
@@ -353,373 +436,3 @@ extern "C" void on_sysret(void *cpu, long unsigned int retval, long unsigned int
   }
   assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &new_regs) == 0);
 }
-
-void enable_syscall_introspection(void* cpu, int idx) {
-  assert(cpu != nullptr);
-  assert(kvm_vcpu_ioctl_pause_vm(cpu, KVM_HYDE_TOGGLE, 1) == 0);
-}
-
-void disable_syscall_introspection(void* cpu) {
-  assert(cpu != nullptr);
-  assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 0) == 0);
-}
-
-bool try_load_coopter(std::string path, void* cpu, int idx) {
-  if (coopters.count(path)) {
-    if (idx == 0) {
-      printf("Already have %s capability loaded\n", path.c_str());
-      return false;
-    }
-      return true; // Cap already loaded for 0th CPU
-  }
-  void* handle = dlopen(path.c_str(), RTLD_LAZY);
-  if (handle == NULL) {
-    printf("Could not open capability at %s: %s\n", path.c_str(), dlerror());
-    return false;
-  }
-
-  coopter_f* do_coopt;
-  do_coopt = (coopter_f*)dlsym(handle, "should_coopt");
-  if (do_coopt == NULL) {
-    printf("Could not find should_coopt function in capability: %s\n", dlerror());
-    dlclose(handle);
-    return false;
-  }
-  if (coopters.empty()) {
-    enable_syscall_introspection(cpu, idx);
-  }
-  coopters[path] = *do_coopt;
-  return true;
-}
-
-bool try_unload_coopter(std::string path, void* cpu, int idx) {
-  if (!coopters.count(path)) {
-    if (idx == 0) {
-      printf("Capability %s has not been loaded\n", path.c_str());
-      return false;
-    }
-    return true; // Already unloaded for 0th cpu??
-  }
-  coopters.erase(path);
-  if (coopters.empty()) {
-    disable_syscall_introspection(cpu);
-  }
-  return true;
-}
-
-extern "C" bool kvm_load_hyde_capability(const char* path, void *cpu, int idx) {
-  return try_load_coopter(std::string(path), cpu, idx);
-}
-
-extern "C" bool kvm_unload_hyde_capability(const char* path, void *cpu, int idx) {
-  return try_unload_coopter(std::string(path), cpu, idx);
-}
-
-extern "C" void hyde_init(void) {
-  //const char* path = "/home/andrew/hhyde/cap_libs/cap.so";
-  //assert(try_load_coopter(path));
-}
-
-__u64 translate(void *cpu, __u64 gva, int* error) {
-  struct kvm_translation trans = {
-    .linear_address = gva
-  };
-
-  *error = kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &trans); // Zero on success
-
-  if (*error) {
-    return (__u64)-1;
-  }
-
-  __u64 phys_addr;
-  if (kvm_host_addr_from_physical_physical_memory(trans.physical_address, &phys_addr) != 1) {
-    *error = true;
-    return (__u64)-1;
-  }
-  return phys_addr;
-}
-
-
-__u64 memread(asid_details* r, __u64 gva, hsyscall* sc) {
-  printf("DEPRECATED: memread(gva=%llx, sc=%p)\n", gva, sc);
-  return (__u64)-1;
-}
-
-int getregs(asid_details *r, struct kvm_regs *regs) {
-  return kvm_vcpu_ioctl(r->cpu, KVM_GET_REGS, regs);
-}
-
-int getregs(void *cpu, struct kvm_regs *regs) {
-  return kvm_vcpu_ioctl(cpu, KVM_GET_REGS, regs);
-}
-
-int setregs(asid_details *r, struct kvm_regs *regs) {
-  return kvm_vcpu_ioctl(r->cpu, KVM_SET_REGS, &regs) == 0;
-}
-
-int setregs(void *cpu, struct kvm_regs *regs) {
-  return kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &regs) == 0;
-}
-
-bool can_translate_gva(void*cpu, uint64_t gva) {
-  struct kvm_translation trans = { .linear_address = (__u64)gva };
-
-  // Requesting the translation shouldn't ever fail, even though
-  // the translated result might be that the translation failed
-  assert(kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &trans) == 0);
-
-  // Translation ok if valid and != -1
-  return (trans.valid && trans.physical_address != (unsigned long)-1);
-}
-
-/* Given a GVA, try to translate it to a host address.
- * return indicates success. If success, host address 
- * will be set in hva argument. */
-bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva) {
-  if (!can_translate_gva(r->cpu, gva)) {
-    return false;
-  }
-  // Duplicate some logic from can_translate_gva so we can get the physaddr here
-  struct kvm_translation trans = { .linear_address = (__u64)gva };
-  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
-
-  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, (__u64*)hva) == 1);
-  return true;
-}
-
-/*
- * Copy size bytes from a guest virtual address into a host buffer.
- */
-SyscCoro ga_memcpy_one(asid_details* r, void* out, uint64_t gva, size_t size) {
-  // We wish to read size bytes from the guest virtual address space
-  // and store them in the buffer pointed to by out. If out is NULL,
-  // we allocate it
-
-  uint64_t hva = 0;
-
-  if (!translate_gva(r, gva, &hva)) {
-      yield_syscall_raw(r, access, (uint64_t)gva, 0);
-      if (!translate_gva(r, gva, &hva)) {
-        yield_syscall_raw(r, access, (uint64_t)gva, 0); // Try again
-        if (!translate_gva(r, gva, &hva)) {
-          co_return -1; // Failure, even after two retries?
-        }
-      }
-  }
-
-  //printf("Writing %lu bytes of data to %lx - %lx\n",  size, (uint64_t)out, (uint64_t)out + size);
-  memcpy((uint64_t*)out, (void*)hva, size);
-  co_return 0;
-}
-
-
-#define PAGE_SIZE 1024
-/* Memread will copy guest data to a host buffer, paging in memory as needed.
- * It's an alias for ga_memcpy but that might go away later in favor of this name.
- */
-SyscCoro ga_memread(asid_details* r, void* out, uint64_t gva_base, size_t size) {
-  co_return yield_from(ga_memcpy, r, out, gva_base, size);
-}
-
-/*
- * Copy size bytes from a guest virtual address into a host buffer, re-issue
- * translation requests as necessary, guaranteed to work so long as address through
- * address + size are mappable
- */
-SyscCoro ga_memcpy(asid_details* r, void* out, uint64_t gva_base, size_t size) {
-
-  uint64_t gva_end = (uint64_t)((uint64_t)gva_base + size);
-  uint64_t gva_start_page = (uint64_t)gva_base  & ~(PAGE_SIZE - 1);
-  //uint64_t gva_end_page = (uint64_t)gva_end  & ~(PAGE_SIZE - 1);
-  uint64_t first_page_size = std::min((uint64_t)gva_base - gva_start_page, (uint64_t)size);
-
-  // Copy first page up to alignment (or maybe even end!)
-  //printf("Read up to %lu bytes into hva %lx from gva %lx\n", first_page_size, (uint64_t)out, (uint64_t)gva_base);
-  if (yield_from(ga_memcpy_one, r, out, gva_base, first_page_size) == -1) {
-    printf("First page read fails\n");
-    co_return -1;
-  }
-
-  gva_base += first_page_size;
-  out = (void*)((uint64_t)out + first_page_size);
-
-  while ((uint64_t)gva_base < (uint64_t)gva_end) {
-    uint64_t this_sz = std::min((uint64_t)PAGE_SIZE, (uint64_t)gva_end - (uint64_t)gva_base);
-      //printf("SUBSEQUENT read (Still need %lx bytes) up to %lu bytes into hva %lx from gva %lx\n",
-      //(uint64_t)gva_end - (uint64_t)gva_base, this_sz, (uint64_t)out, (uint64_t)gva_base);
-
-    if (yield_from(ga_memcpy_one, r, out, gva_base, this_sz) == -1) {
-    printf("Subsequent page read fails\n");
-      co_return -1;
-    }
-    gva_base += this_sz;
-    out = (void*)((uint64_t)out + this_sz);
-  }
-  co_return 0;
-
-  #if 0
-  // Let's read from address to next page, then read pages? This is still a bit of a lazy implementation,
-  // really we should be like binary searching
-
-
-  // Given address X that lies somewhere between two pages, and say we want the subsequent page:
-  // | page1 start     X      | page2 start     | page 3 start
-
-  // First we calculate page1 start, translate it, calculate the offset of X into page one
-  // and copy the number of bytes from X to the end of page 1 into the buffer
-
-  #define PAGE_SIZE 0x1000uL
-  uint64_t start_offset = (uint64_t)gva_base & (PAGE_SIZE-1);
-  uint64_t first_page = (uint64_t)((uint64_t)gva_base & ~(PAGE_SIZE-1));
-
-  if (first_page != gva_base) {
-    // Original address wasn't page aligned
-    uint64_t hva;
-    if (!translate_gva(r, first_page, &hva)) {
-        yield_syscall(r, __NR_access, (__u64)first_page, 0);
-        if (!translate_gva(r, gva_base, &hva)) {
-          co_return -1; // Failure, even after retry
-        }
-    }
-    // Sanity check, should be able to translate requested address now that we have the page?
-    assert(can_translate_gva(r->cpu, gva_base));
-
-    //printf("\tga_memcpy: first copy. guest first page %lx maps to host %lx, reading from host at %lx\n", (uint64_t)first_page, hva, hva + start_offset);
-    memcpy((uint64_t*)out, (void*)(hva + start_offset), std::min((ulong)size, (ulong)(PAGE_SIZE - start_offset)));
-  }
-
-  // Now copy page-aligned memory, one page at a time
-  for (uint64_t page = gva_base + start_offset; page < gva_base + size; page += PAGE_SIZE) {
-    ulong remsize  = std::min((ulong)PAGE_SIZE, (ulong)((gva_base + size) - page));
-
-    printf("\tga_memcpy: subsequent page = %p, size=%lu\n", page, remsize);
-    uint64_t hva;
-    if (!translate_gva(r, page, &hva)) {
-        yield_syscall(r, __NR_access, (__u64)page, 0);
-        if (!translate_gva(r, gva_base, &hva)) {
-          co_return -1; // Failure, even after retry
-        }
-    }
-
-    printf("\tga_memcpy: subsequent copy of %lu bytes from %lx to %lx\n", remsize, hva, (uint64_t)out+(page-gva_base));
-    memcpy((uint64_t*)out+(page-gva_base), (void*)hva, remsize);
-  }
-
-  co_return 0;
-  #endif
-}
-
-/* Given a host buffer, write it to a guest virtual address. The opposite
- * of ga_memcpy */
-SyscCoro ga_memwrite(asid_details* r, uint64_t gva, void* in, size_t size) {
-  // TODO: re-issue translation requests as necessary
-  uint64_t hva;
-  assert(size != 0);
-
-  if (!translate_gva(r, gva, &hva)) {
-      //yield_syscall(r, __NR_access, (__u64)gva, 0);
-      yield_syscall_raw(r, access, (uint64_t)gva, 0); // XXX: don't auto-map arguments! And don't typecheck!
-      if (!translate_gva(r, gva, &hva)) {
-        co_return -1; // Failure, even after retry
-      }
-  }
-
-  //printf("Copying %lu bytes of %s to GVA %lx\n", size, (char*)in, (uint64_t)gva);
-  memcpy((uint64_t*)hva, in, size);
-  co_return 0;
-}
-
-SyscCoro ga_map(asid_details* r,  uint64_t gva, void** host, size_t min_size) {
-  // Set host to a host virtual address that maps to the guest virtual address gva
-
-  // TODO: Assert that gva+0 and gva+min_size can both be reached
-  //at host[0], and host[min_size] after mapping. If not, fail?
-  // TODO how to handle failures here?
-  __u64 _gva = (uint64_t)gva & (uint64_t)-1;
-
-  struct kvm_translation trans = { .linear_address = _gva };
-  assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
-
-  // Translation failed on base address - not in our TLB, maybe paged out
-  if (trans.physical_address == (unsigned long)-1) {
-      yield_syscall_raw(r, access, _gva, 0);
-
-      // Now retry. if we fail again, bail
-      //printf("Retrying to read %llx\n", trans.linear_address);
-      assert(kvm_vcpu_ioctl(r->cpu, KVM_TRANSLATE, &trans) == 0);
-      //printf("\t result: %llx\n", trans.physical_address);
-      if (trans.physical_address == (unsigned long)-1) {
-        printf("Oh no we double fail mapping %llx\n", _gva);
-        co_return -1; // Failure!
-      }
-  }
-
-  // Translation has succeeded, we have the guest physical address
-  // Now translate that to the host virtual address
-  __u64 hva;
-  assert(kvm_host_addr_from_physical_physical_memory(trans.physical_address, &hva) == 1);
-  (*host) = (void*)hva;
-
-  co_return 0;
-}
-
-// Helpers
-void dump_sc(struct kvm_regs r) {
-#ifndef WINDOWS
-  // LINUX
-  printf("Callno %lld (%llx, %llx, %llx, %llx, %llx, %llx)\n", CALLNO(r),
-        ARG0(r), ARG1(r), ARG2(r), ARG3(r), ARG4(r), ARG5(r));
-#else
-  // Windows
-  printf("Callno %lld (%llx, %llx, %llx, %llx)\n", CALLNO(r),
-        r.r10, r.rdx, r.r8, r.r9);
-#endif
-}
-
-void dump_sc_with_stack(asid_details* a, struct kvm_regs r) {
-  dump_sc(r);
-  // Dump stack too!
-  unsigned long int *stack;
-  stack = (unsigned long int*)memread(a, r.rsp, nullptr);
-#ifdef WINDOWS
-  for (int i=0; i < 10; i++) {
-#else
-    if (0) { // TODO linux stack based logging
-      int i = 0;
-#endif
-    printf("\t - Stack[%d] = %lx\n", i, stack[i]);
-  }
-}
-
-void dump_regs(struct kvm_regs r) {
-  printf("PC: %016llx    RAX: %016llx    RBX %016llx    RCX %016llx    RDX %016llx   RSI %016llx   RDI %016llx   RSP %016llx\n",
-      r.rip, r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rsp);
-  printf("\t RBP: %016llx    R8 %016llx    R9 %016llx    R10 %016llx    R11 %016llx    R12 %016llx    R13 %016llx\n", r.rbp, r.r8, r.r9, r.r10, r.r11, r.r12, r.r13);
-  printf("\t R14: %016llx    R15: %016llx    RFLAGS %016llx\n", r.r14, r.r15, r.rflags);
-}
-
-void dump_syscall(hsyscall h) {
-#ifdef DEBUG
-  printf("syscall_%d(", h.callno);
-  for (size_t i=0; i < h.nargs; i++) {
-    printf("%#lx", h.args[i]);
-    if ((i+1) < h.nargs) printf(", ");
-  }
-  printf(")\n");
-#endif
-}
-
-#if 0
-strace -e execve -e raw=execve ./a.out ^C
-root@ubuntu:~# cat foo.c 
-#include <stdio.h>
-
-int main(int argc, char** argv, char** environ) {
-        printf("environ starting at %p\n", environ);
-        while (*environ != NULL) {
-                printf("\tAt %p we have %s\n", environ, *environ);
-                ++environ;
-        }
-}
-
-#endif

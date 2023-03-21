@@ -6,12 +6,16 @@
 #include <string>
 #include <linux/kvm.h>
 #include <coroutine>
+#include <cstdint>
+#include <stdexcept>
+#include <cassert>
 
 // This file provides common datatypes used by both KVM-hyde and hyde programs.
 // Additionally it provides prototypes for KVM-hyde functions that may be used by hyde programs.
 
 //#define WINDOWS
 //#define HYDE_DEBUG
+
 
 struct hsyscall_arg {
   uint64_t value; // host_pointer OR constant
@@ -98,6 +102,52 @@ struct asid_details {
   //std::function<void(_asid_details*, void*, unsigned long, unsigned long, unsigned long)> *on_ret; // Unused
 };
 
+// Enum for argument indexing into kvm_regs struct
+enum class RegIndex {
+    ARG0 = 0, ARG1 = 1, ARG2 = 2,
+    ARG3 = 3, ARG4 = 4, ARG5 = 5,
+    CALLNO = 6, RET = 7, // Both refer to rax, treated as same elsewhere
+};
+
+// Function to get the argument value by index
+inline uint64_t get_arg(struct kvm_regs s, RegIndex idx) {
+    switch (idx) {
+        case RegIndex::CALLNO:
+        case RegIndex::RET: return s.rax;
+        case RegIndex::ARG0: return s.rdi;
+        case RegIndex::ARG1: return s.rsi;
+        case RegIndex::ARG2: return s.rdx;
+        case RegIndex::ARG3: return s.r10;
+        case RegIndex::ARG4: return s.r8;
+        case RegIndex::ARG5: return s.r9;
+        default: throw std::runtime_error("Invalid register index");
+    }
+}
+
+// Function to set the argument value by index given an hsyscall_arg
+inline void set_arg(struct kvm_regs& s, RegIndex idx, hsyscall_arg arg) {
+    // XXX: callno and ret can't be pointers
+    uint64_t value = arg.is_ptr ? arg.guest_ptr : arg.value;
+    switch (idx) {
+        case RegIndex::ARG0: s.rdi = value; break;
+        case RegIndex::ARG1: s.rsi = value; break;
+        case RegIndex::ARG2: s.rdx = value; break;
+        case RegIndex::ARG3: s.r10 = value; break;
+        case RegIndex::ARG4: s.r8 = value; break;
+        case RegIndex::ARG5: s.r9 = value; break;
+        default: throw std::runtime_error("Invalid register index");
+    }
+}
+
+// CALLNO/RET are set as uint64_ts, not hsyscall_args
+inline void set_arg(struct kvm_regs& s, RegIndex idx, uint64_t value) {
+    switch (idx) {
+        case RegIndex::CALLNO:
+        case RegIndex::RET: s.rax = value; break;
+        default: throw std::runtime_error("Invalid register index");
+    }
+}
+
 
 // create_coopt_t functions are called with a bunch of stuff and return a pointer to a function with type SyscCoro(asid_details*)
 typedef SyscCoro(create_coopt_t)(asid_details*);
@@ -107,6 +157,7 @@ typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int, 
 bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva); // Coroutine helpers use this for translation
 int kvm_vcpu_ioctl_ext(void *cpu, int type, ...);
 int kvm_host_addr_from_physical_memory_ext(uint64_t gpa, uint64_t *phys_addr);
+int getregs(asid_details *r, struct kvm_regs *regs);
 
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return -1;};
 

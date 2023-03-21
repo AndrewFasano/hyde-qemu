@@ -156,7 +156,7 @@ bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva) {
 void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig) {
     struct kvm_regs r;
     memcpy(&r, orig, sizeof(struct kvm_regs));
-    set_CALLNO(r, sysc->callno); // callno is always RAX
+    set_arg(r, RegIndex::CALLNO, sysc->callno);
                                   // Arguments vary by OS
     //dprintf("Applying syscall to registers:");
 
@@ -168,15 +168,10 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
 #define N_STACK 4
 
 #else
-    // TODO: this is stupid.
-
-    if (sysc->nargs > 0) set_ARG0(r, sysc->args[0]);
-    if (sysc->nargs > 1) set_ARG1(r, sysc->args[1]);
-    if (sysc->nargs > 2) set_ARG2(r, sysc->args[2]);
-    if (sysc->nargs > 3) set_ARG3(r, sysc->args[3]);
-    if (sysc->nargs > 4) set_ARG4(r, sysc->args[4]);
-    if (sysc->nargs > 5) set_ARG5(r, sysc->args[5]);
-#define N_STACK 6
+#define N_STACK 6u
+    for (int i = 0; i < std::max(N_STACK, sysc->nargs); i++) {
+        set_arg(r, (RegIndex)i, sysc->args[i]);
+    }
 #endif
 
     // TODO: test and debug this - what linux syscall has > 6 args?
@@ -238,7 +233,7 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
 
     a = new asid_details {
       .orig_syscall = new hsyscall {
-        .callno = CALLNO(r),
+        .callno = get_arg(r, RegIndex::CALLNO),
         .nargs = 6,
         .has_retval = false,
       },
@@ -250,19 +245,10 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
 
     // This is stupid
     //.args = { ARG0(r), ARG1(r), ARG2(r), ARG3(r), ARG4(r), ARG5(r) },
-    a->orig_syscall->args[0].value = ARG0(r);
-    a->orig_syscall->args[0].is_ptr = false;
-    a->orig_syscall->args[1].value = ARG1(r);
-    a->orig_syscall->args[1].is_ptr = false;
-    a->orig_syscall->args[2].value = ARG2(r);
-    a->orig_syscall->args[2].is_ptr = false;
-    a->orig_syscall->args[3].value = ARG3(r);
-    a->orig_syscall->args[3].is_ptr = false;
-    a->orig_syscall->args[4].value = ARG4(r);
-    a->orig_syscall->args[4].is_ptr = false;
-    a->orig_syscall->args[5].value = ARG5(r);
-    a->orig_syscall->args[5].is_ptr = false;
-
+    for (int i = 0; i < 6; i++) {
+      a->orig_syscall->args[i].value = get_arg(r, (RegIndex)i);
+      a->orig_syscall->args[i].is_ptr = false;
+    }
     memcpy(&a->orig_regs, &r, sizeof(struct kvm_regs));
 
     // This ends our maybe race condition - we've built the asid_details entry

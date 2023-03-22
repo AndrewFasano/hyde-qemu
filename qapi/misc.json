@@ -625,3 +625,20 @@
 ##
 {'command': 'hyde-unload',
  'data': { 'name': 'str' } }
+
+##
+# @hyde-unload-all:
+#
+# Unload all hyde programs
+#
+# Returns: nothing on success.
+#
+# Since: 6.1.1
+#
+# Example:
+#
+# -> { "execute": "hyde-unload-all" }
+# <- { "return": {} }
+#
+##
+{'command': 'hyde-unload-all'}

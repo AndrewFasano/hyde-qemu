@@ -2023,3 +2023,11 @@ void hmp_hyde_disable(Monitor *mon, const QDict *qdict)
     }
     hmp_handle_error(mon, err);
 }
+
+void hmp_hyde_disable_all(Monitor *mon, const QDict *qdict)
+{
+    CPUState *cs;
+    CPU_FOREACH(cs) {
+        kvm_unload_hyde(cs, cs->cpu_index); 
+    }
+}

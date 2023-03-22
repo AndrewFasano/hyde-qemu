@@ -39,6 +39,7 @@ bool try_load_coopter(std::string path, void* cpu, int idx);
 bool try_unload_coopter(std::string path, void* cpu, int idx);
 
 extern "C" { // Called by the qemu monitor
+  bool kvm_unload_hyde(void *cpu, int idx); // Unload all hyde programs
   bool kvm_load_hyde_capability(const char* path, void *cpu, int idx);
   bool kvm_unload_hyde_capability(const char* path, void *cpu, int idx);
 }

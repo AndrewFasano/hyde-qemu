@@ -147,5 +147,6 @@ void hmp_info_stats(Monitor *mon, const QDict *qdict);
 
 void hmp_hyde_enable(Monitor *mon, const QDict *qdict);
 void hmp_hyde_disable(Monitor *mon, const QDict *qdict);
+void hmp_hyde_disable_all(Monitor *mon, const QDict *qdict);
 
 #endif

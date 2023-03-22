@@ -102,6 +102,15 @@ bool try_unload_coopter(std::string path, void* cpu, int idx) {
   return true;
 }
 
+bool kvm_unload_hyde(void *cpu, int idx) {
+  // For each in coopters,
+  for (auto it = coopters.begin(); it != coopters.end(); ++it) {
+    printf("Unloading %s\n", it->first.c_str());
+    try_unload_coopter(it->first, cpu, idx);
+  }
+  return true;
+}
+
 bool kvm_load_hyde_capability(const char* path, void *cpu, int idx) {
   return try_load_coopter(std::string(path), cpu, idx);
 }
@@ -243,8 +252,6 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
       .custom_return = 0,
     };
 
-    // This is stupid
-    //.args = { ARG0(r), ARG1(r), ARG2(r), ARG3(r), ARG4(r), ARG5(r) },
     for (int i = 0; i < 6; i++) {
       a->orig_syscall->args[i].value = get_arg(r, (RegIndex)i);
       a->orig_syscall->args[i].is_ptr = false;

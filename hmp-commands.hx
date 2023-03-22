@@ -1824,6 +1824,19 @@ ERST
     },
 
 SRST
+``hyde_disable_all``
+  Deactivate all loaded hyde programs
+ERST
+
+    {
+        .name       = "hyde_disable_all",
+        .args_type  = "",
+        .params     = "",
+        .help       = "disable alla HyDE programs",
+        .cmd        = hmp_hyde_disable_all,
+    },
+
+SRST
 ``cancel_vcpu_dirty_limit``
   Cancel dirty page rate limit on virtual CPU, the information about all the
   virtual CPU dirty limit status can be observed with ``info vcpu_dirty_limit``

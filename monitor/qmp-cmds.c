@@ -132,6 +132,13 @@ void qmp_hyde_unload(const char* capname, Error **errp)
     }
  }
 
+void qmp_hyde_unload_all(Error **errp)
+ {
+    CPUState *cs;
+    CPU_FOREACH(cs) {
+        kvm_unload_hyde(cs, cs->cpu_index);
+    }
+ }
 
 void qmp_cont(Error **errp)
 {

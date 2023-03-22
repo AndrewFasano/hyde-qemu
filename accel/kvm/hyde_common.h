@@ -38,16 +38,26 @@ typedef struct {
   bool has_retval;
 } hsyscall;
 
-// Coroutine that yield objects of type T and finally returns a uint64_t
-template <typename T>
+// Enum for coroutine exit status
+enum class ExitStatus {
+    SUCCESS = 0, // OK & do nothing
+    FINISHED = 1, // OK & unload HyDe Program
+    SINGLE_FAILURE = -1, // Failed & do nothing
+    FATAL = -2, // Failed & unload HyDe Program
+};
+
+
+// Coroutine that yield objects of type T and finally returns an ExitStatus
+// To be used by HyDE programs
+template <typename T, typename R>
 struct HydeCoro {
   struct promise_type {
     T value_;
-    uint64_t retval;
+    R retval;
 
     ~promise_type() {}
 
-    HydeCoro<T> get_return_object() {
+    HydeCoro<T, R> get_return_object() {
       return {
         .h_ = std::coroutine_handle<promise_type>::from_promise(*this)
       };
@@ -63,21 +73,22 @@ struct HydeCoro {
       //printf("Yielding a value\n");
     }
 
-    //void return_value(T const& value) {
-    void return_value(int value) {
+    void return_value(R value) {
       retval = value;
       value_ = {0};
-      //printf("Returning a value: %ld\n", retval);
     };
   };
 
   std::coroutine_handle<promise_type> h_;
 };
 
-// The syscCoro type is a coroutine that yields hsyscall objects and returns a uint64_t
-typedef HydeCoro<hsyscall> SyscCoro;
+// The syscCoro type is a coroutine that yields hsyscall objects and returns an exit Status
+typedef HydeCoro<hsyscall, ExitStatus> SyscCoro;
+
+// Yields hsyscalls, returns an int - for helper functions
+typedef HydeCoro<hsyscall, int> SyscCoroHelper;
 // coopter_t is a coroutine handle to SyscCoro coroutines
-typedef std::coroutine_handle<HydeCoro<hsyscall>::promise_type> coopter_t;
+typedef std::coroutine_handle<HydeCoro<hsyscall, ExitStatus>::promise_type> coopter_t;
 
 /* This structure stores details about a given process that we are co-opting.
  * It contains a pointer to the coroutine that is simulating the process's execution.
@@ -86,10 +97,11 @@ typedef std::coroutine_handle<HydeCoro<hsyscall>::promise_type> coopter_t;
 */
 struct asid_details {
   coopter_t coopter; // The coroutine that is simulating the process's execution
+  std::string name; // Name (full path) of the hyde program
   struct kvm_regs orig_regs; // The original registers when we started simulating the guest process
   hsyscall *orig_syscall; // The original system call that was about to run in the target process
   void* cpu; // Opaque pointer we use internally
-  long unsigned int last_sc_retval; // Return value to be set after simulating a system call
+  uint64_t last_sc_retval; // Return value to be set after simulating a system call
 
   uint64_t asid;
 

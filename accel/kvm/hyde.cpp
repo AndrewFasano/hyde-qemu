@@ -269,6 +269,7 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
 
     // XXX: this *runs* the coopter function up until its first co_yield/co_ret
     a->coopter = (*f)(active_details[{asid, cpu_id}]).h_;
+    a->name = pair.first;
     return a;
   }
 
@@ -368,7 +369,7 @@ void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long
   if (details->orig_syscall->has_retval) {
     dprintf("\n***Return from no-op (er, actually %lu) SC in %lx with rv=%lx\n", details->orig_syscall->callno, asid, retval);
   } else {
-    details->last_sc_retval = retval;
+    details->last_sc_retval = (uint64_t)retval;
     dprintf("Return from injected syscall in %lx with rv=%lx. Advance coopter:\n", asid, retval);
   }
   // If we set has_retval, it's in a funky state - we need to advance it so it will finish, otherwise we'll
@@ -383,6 +384,11 @@ void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long
 
   if (details->coopter.done()) {
     // Co-opter is done. Clean up time
+
+    // Get result
+    auto &promise = details->coopter.promise();
+    ExitStatus result = promise.retval;
+
     struct kvm_regs oldregs;
 #ifdef DEBUG
     getregs(details, &oldregs);
@@ -420,8 +426,27 @@ void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long
                          // kernel code.
     }
 
+    // Remove this active coopter
     details->coopter.destroy();
     active_details.erase({asid, cpu_id});
+
+    // Based on result, update state for the whole hyde program
+    switch (result) {
+      case ExitStatus::FATAL:
+        printf("[HyDE] Fatal error in %s\n", details->name.c_str());
+      case ExitStatus::FINISHED:
+        printf("[HyDE] Unloading %s on cpu %d\n", details->name.c_str(), 0);
+        try_unload_coopter(details->name, cpu, 0); // XXX multicore guests, need to do for all CPUs?
+        break;
+
+      case ExitStatus::SINGLE_FAILURE:
+        printf("[HyDE] Warning %s experienced a non-fatal failure\n", details->name.c_str());
+        break;
+
+      case ExitStatus::SUCCESS:
+        // Nothing to do
+        break;
+    }
   } else {
     //assert(!details->coopter.promise().did_return);
     dprintf("Not done in %lx, %ld - go back to %lx\n", asid, cpu_id, pc-1);

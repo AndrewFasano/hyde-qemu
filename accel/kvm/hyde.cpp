@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <tuple>
+#include <set>
 #include <type_traits>
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -29,6 +30,8 @@ extern "C" int kvm_host_addr_from_physical_memory(hwaddr gpa, hwaddr *phys_addr)
 #include "hyde_common.h"
 #include "hyde_internal.h"
 
+std::set<std::string> pending_exits = {};
+
 void dprintf(const char *fmt, ...) {
 #ifdef DEBUG
     va_list ap;
@@ -39,10 +42,17 @@ void dprintf(const char *fmt, ...) {
 }
 
 // Expose some KVM functions externally
-template <typename... Args>
-int kvm_vcpu_ioctl_ext(void *cpu, int type, Args... args) {
-  return kvm_vcpu_ioctl(cpu, type, args...);
+//template <typename... Args>
+//int kvm_vcpu_ioctl_ext(void *cpu, int type, Args... args) {
+//  return kvm_vcpu_ioctl(cpu, type, args...);
+//}
+
+uint64_t kvm_translate(void* cpu, uint64_t gva) {
+  struct kvm_translation trans = { .linear_address = (__u64)gva & (uint64_t)-1}; // Ensure high bits aren't set? Not sure if we need to
+  assert(kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &trans) == 0); // can't fail if we do this right
+  return trans.physical_address;
 }
+
 
 int kvm_host_addr_from_physical_memory_ext(uint64_t gpa, uint64_t *phys_addr) {
   return kvm_host_addr_from_physical_memory((hwaddr)gpa, (hwaddr*)phys_addr);
@@ -106,8 +116,10 @@ bool kvm_unload_hyde(void *cpu, int idx) {
   // For each in coopters,
   for (auto it = coopters.begin(); it != coopters.end(); ++it) {
     printf("Unloading %s\n", it->first.c_str());
-    try_unload_coopter(it->first, cpu, idx);
+    coopters.erase(it++);
   }
+
+  disable_syscall_introspection(cpu);
   return true;
 }
 
@@ -226,6 +238,11 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
   struct kvm_regs r;
   unsigned long cpu_id = get_cpu_id(cpu);
   for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
+    if (pending_exits.contains(pair.first)) {
+      //printf("Skipping coopter %s because we're waiting to unload it\n");
+      continue;
+    }
+
     coopter_f* coopter = pair.second;
     create_coopt_t *f = (*coopter)(cpu, callno, pc, asid);
     // if a should_coopt function returns non-null, set this asid up to be coopted
@@ -289,6 +306,7 @@ void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, lon
   if (!active_details.contains({asid, cpu_id})) {
     // No active co-opter for asid - check to see if any want to start
     // If we find one, we initialize it, running to the first yield/ret
+    // We won't launch a new co-opter if it's trying to exit
     a = find_and_init_coopter(cpu, callno, asid, (unsigned long)pc);
     if (a == NULL) {
       return; 
@@ -400,7 +418,7 @@ void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long
       // This is how we'd do INJECT_SC_A, ORIG_SC, INJECT_SC_B and
       // pretend nothign was injected
       new_regs.rax = details->orig_syscall->retval;
-      printf("Change return in %lx, %ld to be %lx\n", asid, cpu_id, details->orig_syscall->retval);
+      dprintf("Change return in %lx, %ld to be %lx\n", asid, cpu_id, details->orig_syscall->retval);
     } else {
       // We weren't told the orig_syscall has a retval, that means the last
       // return value shoudl be what we pass back. This is how we'd do
@@ -435,8 +453,11 @@ void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long
       case ExitStatus::FATAL:
         printf("[HyDE] Fatal error in %s\n", details->name.c_str());
       case ExitStatus::FINISHED:
-        printf("[HyDE] Unloading %s on cpu %d\n", details->name.c_str(), 0);
-        try_unload_coopter(details->name, cpu, 0); // XXX multicore guests, need to do for all CPUs?
+        if (pending_exits.contains(details->name)) {
+          printf("[HyDE] Unloading %s on cpu %d\n", details->name.c_str(), 0);
+          //try_unload_coopter(details->name, cpu, 0); // XXX multicore guests, need to do for all CPUs?
+          pending_exits.insert(details->name);
+        }
         break;
 
       case ExitStatus::SINGLE_FAILURE:
@@ -447,6 +468,32 @@ void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long
         // Nothing to do
         break;
     }
+
+    // For each pending exit, check if any coopters are still active
+    for (auto it = pending_exits.begin(); it != pending_exits.end(); ) {
+      // Check if any coopters are still active
+      bool active = false;
+      for (const auto &pair : coopters) {
+        if (pair.first == *it) {
+          active = true;
+          break;
+        }
+      }
+
+      if (!active) {
+        if (try_unload_coopter(*it, cpu, 0)) { // Safe to unload now
+          printf("[HyDE] Unloaded %s\n", it->c_str());
+          //it = std::erase_if(pending_exits, [&](const auto& name) { return name == *it; });
+          //it = std::remove_if(pending_exits.begin(), pending_exits.end(), [&](const auto& name) { return name == *it; });
+          it = pending_exits.erase(it);
+          continue;
+        }else {
+          printf("ERROR erasing %s\n", it->c_str());
+        }
+      }
+      ++it;
+    }
+
   } else {
     //assert(!details->coopter.promise().did_return);
     dprintf("Not done in %lx, %ld - go back to %lx\n", asid, cpu_id, pc-1);

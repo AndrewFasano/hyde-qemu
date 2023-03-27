@@ -22,6 +22,8 @@ struct hsyscall_arg {
   bool is_ptr; // if true, value is a host pointer
   uint64_t guest_ptr; // ignored if !is_ptr, otherwise the guest pointer that this host pointer is mapped to
   unsigned int size; // ignored if !is_ptr, otherwise the size of the struct pointed to
+  bool copy_out; // if is_ptr and unset, we won't copy the data back out of the guest
+  //bool copy_in; // if is_ptr and set, we won't copy the data into the guest NYI
 };
 
 /* hsyscall is a struct that represents a system call along with its arguments.
@@ -167,11 +169,12 @@ typedef SyscCoro(create_coopt_t)(asid_details*);
 typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int, unsigned int);
 
 bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva); // Coroutine helpers use this for translation
-int kvm_vcpu_ioctl_ext(void *cpu, int type, ...);
+uint64_t kvm_translate(void *cpu, uint64_t gva);
 int kvm_host_addr_from_physical_memory_ext(uint64_t gpa, uint64_t *phys_addr);
 int getregs(asid_details *r, struct kvm_regs *regs);
 
-#define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return -1;};
+// I've never seen this fail, but it feels safer than an assert?
+#define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return ExitStatus::SINGLE_FAILURE;};
 
 // Type signature for a function *hyde programs* must implement. Implemenations should
 // returns a pointer to a local (extern C) coroutine function if the syscall should be

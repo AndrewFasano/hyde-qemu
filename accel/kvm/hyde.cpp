@@ -239,7 +239,7 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
   unsigned long cpu_id = get_cpu_id(cpu);
   for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
     if (pending_exits.contains(pair.first)) {
-      //printf("Skipping coopter %s because we're waiting to unload it\n");
+      //printf("Skipping coopter %s because we're waiting to unload it\n", pair.first.c_str());
       continue;
     }
 
@@ -298,17 +298,17 @@ void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, lon
   asid_details *a = NULL;
   bool first = false;
 
-  if (!is_syscall_targetable(callno, asid)) {
+  if (!unlikely(is_syscall_targetable(callno, asid))) {
     return;
   }
   unsigned long cpu_id = get_cpu_id(cpu);
 
-  if (!active_details.contains({asid, cpu_id})) {
+  if (!likely(active_details.contains({asid, cpu_id}))) {
     // No active co-opter for asid - check to see if any want to start
     // If we find one, we initialize it, running to the first yield/ret
     // We won't launch a new co-opter if it's trying to exit
     a = find_and_init_coopter(cpu, callno, asid, (unsigned long)pc);
-    if (a == NULL) {
+    if (likely(a == NULL)) {
       return; 
     }
     a->orig_rcx = orig_rcx;
@@ -363,11 +363,15 @@ void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, lon
     return;
   }
 
+  // XXX is this right? March 2023
+  // After every syscall, we restore orig regs since we never know when we'll inject the original
+  // one and need its args to be setup correctly. Can't show a previous retval in RAX when we should have an arg
   set_regs_to_syscall(a, cpu, &sysc, &a->orig_regs);
 
   // If it's a non-returning syscall(?) we can't catch it on return - clean up now.
   // Note this means a users can't inject one of these in the middle of a co-opter
   if (sysc.callno == __NR_execve || sysc.callno == __NR_exit) { // XXX: others? fork/kill?
+    // XXX there's a bug here, at least with exit
     dprintf("Injecting non-returning syscall: no longer tracing %lx\n", asid);
     a->coopter.destroy();
     active_details.erase({asid, cpu_id});
@@ -453,7 +457,7 @@ void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long
       case ExitStatus::FATAL:
         printf("[HyDE] Fatal error in %s\n", details->name.c_str());
       case ExitStatus::FINISHED:
-        if (pending_exits.contains(details->name)) {
+        if (!pending_exits.contains(details->name)) {
           printf("[HyDE] Unloading %s on cpu %d\n", details->name.c_str(), 0);
           //try_unload_coopter(details->name, cpu, 0); // XXX multicore guests, need to do for all CPUs?
           pending_exits.insert(details->name);
@@ -469,12 +473,17 @@ void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long
         break;
     }
 
-    // For each pending exit, check if any coopters are still active
+    // For each pending exit (i.e., coopter that is done), check if any of the injections we're tracking are it
     for (auto it = pending_exits.begin(); it != pending_exits.end(); ) {
       // Check if any coopters are still active
       bool active = false;
-      for (const auto &pair : coopters) {
-        if (pair.first == *it) {
+      for (const auto &kv : active_details) {
+        //const auto& key = kv.first;
+        //const auto& asid = key.first;
+        //const auto& cpu = key.second;
+        asid_details* value = kv.second;
+
+        if (value->name == *it) {
           active = true;
           break;
         }

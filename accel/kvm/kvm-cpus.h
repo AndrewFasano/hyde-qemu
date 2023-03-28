@@ -11,6 +11,7 @@
 #define KVM_CPUS_H
 
 #include "sysemu/cpus.h"
+#include "hyde_internal.h"
 
 int kvm_init_vcpu(CPUState *cpu, Error **errp);
 int kvm_cpu_exec(CPUState *cpu);
@@ -23,9 +24,5 @@ int kvm_insert_breakpoint(CPUState *cpu, int type, hwaddr addr, hwaddr len);
 int kvm_remove_breakpoint(CPUState *cpu, int type, hwaddr addr, hwaddr len);
 void kvm_remove_all_breakpoints(CPUState *cpu);
 int kvm_host_addr_from_physical_memory(hwaddr gpa, hwaddr *phys_addr);
-// Provided by hyde.cpp
-//extern void hyde_init(void);
-extern void on_syscall(void*, long unsigned int, long unsigned int, long unsigned int, long unsigned int, long unsigned int);
-extern void on_sysret(void*, long unsigned int, long unsigned int, long unsigned int);
 
 #endif /* KVM_CPUS_H */

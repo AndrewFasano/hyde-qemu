@@ -1,6 +1,9 @@
 #ifndef HYDE_HELPERS_H
 #define HYDE_HELPERS_H
 
+#ifdef __cplusplus
+// C classes can include this file to get on_syscall + on_sysret. That's it
+
 #include <linux/types.h>
 #include <map>
 #include <set>
@@ -57,8 +60,11 @@ bool is_syscall_targetable(int callno, unsigned long asid);
 // Main logic - create coopter and advance on syscall/sysret
 asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, unsigned long pc);
 extern "C" { // Called by KVM on syscall/sysret
-  void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc, long unsigned int orig_rcx, long unsigned int orig_r11);
-  void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long unsigned int pc);
+#endif
+  void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long unsigned int asid, long unsigned int pc, long unsigned int orig_rcx, long unsigned int orig_r11);
+  void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int retval, long unsigned int asid, long unsigned int pc);
+#ifdef __cplusplus
 } 
+#endif
 
 #endif

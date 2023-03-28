@@ -293,15 +293,14 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
   return NULL;
 }
 
-void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, long unsigned int pc,
+void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long unsigned int asid, long unsigned int pc,
                            long unsigned int orig_rcx, long unsigned int orig_r11) {
   asid_details *a = NULL;
   bool first = false;
 
-  if (!unlikely(is_syscall_targetable(callno, asid))) {
+  if (unlikely(!is_syscall_targetable(callno, asid))) {
     return;
   }
-  unsigned long cpu_id = get_cpu_id(cpu);
 
   if (!likely(active_details.contains({asid, cpu_id}))) {
     // No active co-opter for asid - check to see if any want to start
@@ -378,8 +377,7 @@ void on_syscall(void *cpu, long unsigned int callno, long unsigned int asid, lon
   }
 }
 
-void on_sysret(void *cpu, long unsigned int retval, long unsigned int asid, long unsigned int pc) {
-  unsigned long cpu_id = get_cpu_id(cpu);
+void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int retval, long unsigned int asid, long unsigned int pc) {
   if (!active_details.contains({asid, cpu_id})) {
     return;
   }

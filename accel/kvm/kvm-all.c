@@ -2913,14 +2913,18 @@ int kvm_cpu_exec(CPUState *cpu)
         case KVM_EXIT_TPR_ACCESS:
           {
             bool is_syscall = run->papr_hcall.args[2] == 1;
+            //CPUX86State *x86_env = &X86_CPU(cpu)->env;
+
             if (is_syscall) {
-              on_syscall((void*)cpu, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0],
+                unsigned long cpu_id = run->papr_hcall.args[5]; // cpu id in 5 on syscall
+              on_syscall((void*)cpu, cpu_id, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0],
                   run->papr_hcall.args[3], /* orig_rcx */
                   run->papr_hcall.args[4] /* orig_r11 */
                   );
             }else{
               // Sysret
-              on_sysret((void*)cpu, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0]);
+                unsigned long cpu_id = run->papr_hcall.args[3]; // cpu id in 3 on sysret
+              on_sysret((void*)cpu, cpu_id, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0]);
             }
           }
           ret = 0;

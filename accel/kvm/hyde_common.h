@@ -14,7 +14,7 @@
 // Additionally it provides prototypes for KVM-hyde functions that may be used by hyde programs.
 
 //#define WINDOWS
-//#define HYDE_DEBUG
+#define HYDE_DEBUG
 
 
 struct hsyscall_arg {

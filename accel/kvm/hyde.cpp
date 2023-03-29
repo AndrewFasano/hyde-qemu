@@ -33,7 +33,7 @@ extern "C" int kvm_host_addr_from_physical_memory(hwaddr gpa, hwaddr *phys_addr)
 std::set<std::string> pending_exits = {};
 
 void dprintf(const char *fmt, ...) {
-#ifdef DEBUG
+#ifdef HYDE_DEBUG
     va_list ap;
     va_start(ap, fmt);
     vprintf(fmt, ap);
@@ -233,10 +233,8 @@ bool is_syscall_targetable(int callno, unsigned long asid) {
   return true;
 }
 
-asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, unsigned long pc) {
+asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, int callno, unsigned long asid, unsigned long pc) {
   asid_details *a = NULL;
-  struct kvm_regs r;
-  unsigned long cpu_id = get_cpu_id(cpu);
   for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
     if (pending_exits.contains(pair.first)) {
       //printf("Skipping coopter %s because we're waiting to unload it\n", pair.first.c_str());
@@ -255,27 +253,29 @@ asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, u
     //printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
 
     // Get & store original registers before we run the coopter's first iteration
-    assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &r) == 0); //dump_regs(r);
-
     a = new asid_details {
-      .orig_syscall = new hsyscall {
-        .callno = get_arg(r, RegIndex::CALLNO),
-        .nargs = 6,
-        .has_retval = false,
-      },
       .cpu = cpu,
       .asid = asid,
       .use_orig_regs = false,
       .custom_return = 0,
     };
 
+    // Read guest regs from KVM
+    assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &a->orig_regs) == 0); //dump_regs(r);
+
+    // Create original syscall using info from regs
+    a->orig_syscall = new hsyscall {
+        .callno = get_arg(a->orig_regs, RegIndex::CALLNO),
+        .nargs = 6,
+        .has_retval = false,
+    };
+
+    // Set args using info from regs
     for (int i = 0; i < 6; i++) {
-      a->orig_syscall->args[i].value = get_arg(r, (RegIndex)i);
+      a->orig_syscall->args[i].value = get_arg(a->orig_regs, (RegIndex)i);
       a->orig_syscall->args[i].is_ptr = false;
     }
-    memcpy(&a->orig_regs, &r, sizeof(struct kvm_regs));
 
-    // This ends our maybe race condition - we've built the asid_details entry
     active_details[{asid, cpu_id}] = a;
 
     // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
@@ -302,11 +302,11 @@ void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long 
     return;
   }
 
-  if (!likely(active_details.contains({asid, cpu_id}))) {
+  if (likely(!active_details.contains({asid, cpu_id}))) {
     // No active co-opter for asid - check to see if any want to start
     // If we find one, we initialize it, running to the first yield/ret
-    // We won't launch a new co-opter if it's trying to exit
-    a = find_and_init_coopter(cpu, callno, asid, (unsigned long)pc);
+    // We won't launch a new co-opter if it's trying to unload
+    a = find_and_init_coopter(cpu, cpu_id, callno, asid, (unsigned long)pc);
     if (likely(a == NULL)) {
       return; 
     }
@@ -314,12 +314,12 @@ void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long 
     a->orig_r11 = orig_r11;
 
     first = true;
+    dprintf("New coopter in {%lx, %lx} at %lx: ", asid, cpu_id, pc);
   } else {
     // We already have a co-opter for this asid, it should have been
     // advanced on the last syscall return
-    dprintf("Have existing coopter from {%lx, %lx}\n", asid, cpu_id);
+    dprintf("Existing coopter in {%lx, %lx} at %lx: ", asid, cpu_id, pc);
     a = active_details.at({asid, cpu_id});
-    // No value in fetching regs again, they're the same
   }
 
   //printf("Syscall in active %lx on cpu %ld: callno: %ld\n", asid, cpu_id, callno);
@@ -332,179 +332,207 @@ void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long 
   sysc.nargs = (unsigned int)-1;
   auto &promise = a->coopter.promise();
 
-  if (!a->coopter.done()) {
+  if (likely(!a->coopter.done())) {
     // We have something to inject
     sysc = promise.value_;
-    dprintf("We have something to inject in %lx at PC %lx:\n\t", asid, pc);
+    dprintf("have syscall to inject: %lu\n", sysc.callno);
 
-  } else if (first) {
+  } else if (unlikely(first)) {
     // Nothing to inject and this is the first syscall
     // so we need to run a skip! We do this with a "no-op" syscall
     // and hiding the result on return
-    //printf("SKIP0\n");
+
     if (!a->orig_syscall->has_retval) {
       // No-op: user registered a co-opter but it did nothing so we're already done
-      printf("Warning: co-opter did nothing: ignoring it\n");
+      // The user didn't run the original syscall, nor did they set a return value.
+      // This means the guest is going to see the original callno as a result.
+      // This is probably a user error - warn about it.
+      printf("USER ERROR in %s: co-opter ran 0 syscalls (not even original) and left result unspecified.\n", a->name.c_str());
       a->coopter.destroy();
       active_details.erase({asid, cpu_id});
       return;
     }
+
+    // We have a return value specified - run the skip syscall
+    // and on return, set the return value to the one specified
+
     sysc.nargs = 0;
     sysc.callno = SKIP_SYSNO;
     sysc.has_retval = true;
     sysc.retval = a->orig_syscall->retval;
-    printf("Skip original syscall (was %ld) in %lx at %lx using new syscall %ld and then set RV to %lx\n", a->orig_syscall->callno, asid, pc, sysc.callno, a->orig_syscall->retval);
+    dprintf("skip original (%ld) replace with %ld and set RV to %lx\n", a->orig_syscall->callno, sysc.callno, a->orig_syscall->retval);
 
   } else {
-    printf("FATAL: Not done and not first\n");
-    assert(0); // This should never happen - if it isn't the first one
-               // we would have bailed on the last return if we didn't have more
+    // Unreachable.
+    assert(0 && "FATAL: Injecting syscall, but from a previously-created co-routine that is done\n");
+    // This should never happen - if it isn't the first one
+    // we would have bailed on the last return if we didn't have more
     return;
   }
 
-  // XXX is this right? March 2023
-  // After every syscall, we restore orig regs since we never know when we'll inject the original
-  // one and need its args to be setup correctly. Can't show a previous retval in RAX when we should have an arg
+  // We now have a syscall in sysc yielded from a coopter. It's safe so assume it will almost always be different.
+  // So let's set the guest CPU state to the syscall we want to inject. Even if this is the original syscall,
+  // we need to restore registers to get the right syscall number in place of the last return value.
   set_regs_to_syscall(a, cpu, &sysc, &a->orig_regs);
 
-  // If it's a non-returning syscall(?) we can't catch it on return - clean up now.
-  // Note this means a users can't inject one of these in the middle of a co-opter
-  if (sysc.callno == __NR_execve || sysc.callno == __NR_exit) { // XXX: others? fork/kill?
-    // XXX there's a bug here, at least with exit
-    dprintf("Injecting non-returning syscall: no longer tracing %lx\n", asid);
+  // If the injected syscall won't return in the same ASID, we can't catch it. There are two implications:
+  //  1) We can't clean up our state for this coroutine on the return
+  //  2) The user can't run more syscalls in this coroutine
+
+  // As such, we clean up *here*, but we also detect if the coroutine is still alive and warn in that case.
+  if (unlikely(sysc.callno == __NR_exit || sysc.callno == __NR_exit_group)) {
+    // Hmm, this co-routine isn't run again until the on sysret. It might be dangerous to explicitly run it here, but YOLO
+
+    // Pretend we did run it and got a result for the sake of the co-routine which could still (incorrectly) use this value.
+    // This is a bit tricky. We can either falsely advance the coopter with an unset retval (!!) here in order to see if it's
+    // going to try injecting more syscalls and conditionally warn. Or we can not advance it and never warn. We pick the former.
+    a->coopter(); // Advance the coroutine such that it will finish, assuming it had no more syscalls to yield.
+    if (!a->coopter.done()) {
+      printf("USER ERROR in %s: co-opter runs non-returning syscall %lu but it wasn't the last syscall in the co-opter. Subsequent logic in co-opter will not run\n", a->name.c_str(), sysc.callno);
+    }
     a->coopter.destroy();
+    delete a->orig_syscall;
+    delete a;
     active_details.erase({asid, cpu_id});
   }
 }
 
 void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int retval, long unsigned int asid, long unsigned int pc) {
-  if (!active_details.contains({asid, cpu_id})) {
+  auto iter = active_details.find({asid, cpu_id});
+  if (likely(iter == active_details.end())) {
+    // We don't have a coopter for this asid, so will leave it alone
     return;
   }
-  asid_details *details = active_details.at({asid, cpu_id});
 
-  // If capability wants to finish and set a retval without running another
+  asid_details *details = iter->second;
+
+  dprintf("\tAfter injected sc in %lx:", asid);
+  // If hyde program wants to finish and set a retval without running another
   // syscall, it can set orig_syscall->retval and orig_syscall->has_retval
   // Then we'll just set this to the retval on the sysret
-  if (details->orig_syscall->has_retval) {
-    dprintf("\n***Return from no-op (er, actually %lu) SC in %lx with rv=%lx\n", details->orig_syscall->callno, asid, retval);
+  if (unlikely(details->orig_syscall->has_retval)) {
+    dprintf("Did nop (really %lu) with rv=%lx.", details->orig_syscall->callno, retval);
   } else {
     details->last_sc_retval = (uint64_t)retval;
-    dprintf("Return from injected syscall in %lx with rv=%lx. Advance coopter:\n", asid, retval);
+    dprintf("rv=%lx.", retval);
   }
   // If we set has_retval, it's in a funky state - we need to advance it so it will finish, otherwise we'll
   // keep yielding the last (no-op) syscall over and over again
   details->coopter(); // Advance - will have access to the just returned value
-  dprintf("\t[End of subsequent step]\n");
 
   struct kvm_regs new_regs;
   memcpy(&new_regs, &details->orig_regs, sizeof(struct kvm_regs));
 
   //printf("Done is %d\n", details->coopter.done());
 
-  if (details->coopter.done()) {
-    // Co-opter is done. Clean up time
+  if (!details->coopter.done()) {
+    // We have more to do, re-execute the syscall instruction, which will hit on_syscall and then this fn again.
+    dprintf("Not done, go back to %lx\n", pc-2);
+    new_regs.rip = pc-2; // Take it back now, y'all
+    assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &new_regs) == 0);
+    return;
+  }
 
-    // Get result
-    auto &promise = details->coopter.promise();
-    ExitStatus result = promise.retval;
+  // All done - clean up time. Get result, examine to decide if we should disable this hyde program
+  // or print a warning or just keep chugging along. At end of each coopter, we check if any hyde
+  // programs can (now) be safely unloaded that previously wanted to unload.
 
-    struct kvm_regs oldregs;
-#ifdef DEBUG
-    getregs(details, &oldregs);
-    dprintf("\tCoopter done, last sc returned %x return to %lx\n", oldregs.rax, pc);
+  // Get result
+  auto &promise = details->coopter.promise();
+  ExitStatus result = promise.retval;
+
+  struct kvm_regs oldregs;
+#ifdef HYDE_DEBUG
+  getregs(details, &oldregs);
+  dprintf("Done, return to %lx. ", pc); 
 #endif
 
-    if (details->orig_syscall->has_retval) {
-      // We set a retval in orig_syscall object, return that
-      // This is how we'd do INJECT_SC_A, ORIG_SC, INJECT_SC_B and
-      // pretend nothign was injected
-      new_regs.rax = details->orig_syscall->retval;
-      dprintf("Change return in %lx, %ld to be %lx\n", asid, cpu_id, details->orig_syscall->retval);
-    } else {
-      // We weren't told the orig_syscall has a retval, that means the last
-      // return value shoudl be what we pass back. This is how we'd do
-      // INJECT_SC_A, INJECT_SC_B, ORIG.
-      getregs(details, &oldregs);
-      new_regs.rax = oldregs.rax;
-    }
 
-    if (details->use_orig_regs) {
-      new_regs.rcx = details->orig_rcx;
-      new_regs.r11 = details->orig_r11;
-      /// XXX: eflags is also changed, but that's not so important? Also not sure how to cleanly restore
-    }
-
-    if (details->custom_return != 0) { // Custom return *address*
-      new_regs.rip = details->custom_return;
-    } else {
-      new_regs.rip = pc; // XXX we *do* need to explicitly set this to
-                         // return back to userspace, otherwise rip is
-                         // the LSTAR value, not the next userspace insn.
-                         // I assume this is because of a delay with KVM updating
-                         // registers, not because there's more to do in the LSTAR
-                         // kernel code.
-    }
-
-    // Remove this active coopter
-    details->coopter.destroy();
-    active_details.erase({asid, cpu_id});
-
-    // Based on result, update state for the whole hyde program
-    switch (result) {
-      case ExitStatus::FATAL:
-        printf("[HyDE] Fatal error in %s\n", details->name.c_str());
-      case ExitStatus::FINISHED:
-        if (!pending_exits.contains(details->name)) {
-          printf("[HyDE] Unloading %s on cpu %d\n", details->name.c_str(), 0);
-          //try_unload_coopter(details->name, cpu, 0); // XXX multicore guests, need to do for all CPUs?
-          pending_exits.insert(details->name);
-        }
-        break;
-
-      case ExitStatus::SINGLE_FAILURE:
-        printf("[HyDE] Warning %s experienced a non-fatal failure\n", details->name.c_str());
-        break;
-
-      case ExitStatus::SUCCESS:
-        // Nothing to do
-        break;
-    }
-
-    // For each pending exit (i.e., coopter that is done), check if any of the injections we're tracking are it
-    for (auto it = pending_exits.begin(); it != pending_exits.end(); ) {
-      // Check if any coopters are still active
-      bool active = false;
-      for (const auto &kv : active_details) {
-        //const auto& key = kv.first;
-        //const auto& asid = key.first;
-        //const auto& cpu = key.second;
-        asid_details* value = kv.second;
-
-        if (value->name == *it) {
-          active = true;
-          break;
-        }
-      }
-
-      if (!active) {
-        if (try_unload_coopter(*it, cpu, 0)) { // Safe to unload now
-          printf("[HyDE] Unloaded %s\n", it->c_str());
-          //it = std::erase_if(pending_exits, [&](const auto& name) { return name == *it; });
-          //it = std::remove_if(pending_exits.begin(), pending_exits.end(), [&](const auto& name) { return name == *it; });
-          it = pending_exits.erase(it);
-          continue;
-        }else {
-          printf("ERROR erasing %s\n", it->c_str());
-        }
-      }
-      ++it;
-    }
-
+  if (details->orig_syscall->has_retval) {
+    // We set a retval in orig_syscall object, return that
+    // This is how we'd do INJECT_SC_A, ORIG_SC, INJECT_SC_B and
+    // pretend nothing was injected
+    new_regs.rax = details->orig_syscall->retval;
+    dprintf("change return to be %lx\n", details->orig_syscall->retval);
   } else {
-    //assert(!details->coopter.promise().did_return);
-    dprintf("Not done in %lx, %ld - go back to %lx\n", asid, cpu_id, pc-1);
-    new_regs.rip = pc-2; // Take it back now, y'all
+    // We weren't told the orig_syscall has a retval, that means the last
+    // return value shoudl be what we pass back. This is how we'd do
+    // INJECT_SC_A, INJECT_SC_B, ORIG.
+    getregs(details, &oldregs);
+    new_regs.rax = oldregs.rax;
+  }
+
+  if (details->use_orig_regs) {
+    new_regs.rcx = details->orig_rcx;
+    new_regs.r11 = details->orig_r11;
+    /// XXX: eflags is also changed, but that's not so important? Also not sure how to cleanly restore
+  }
+
+  if (details->custom_return != 0) { // Custom return *address*
+    new_regs.rip = details->custom_return;
+  } else {
+    new_regs.rip = pc; // XXX we *do* need to explicitly set this to
+                        // return back to userspace, otherwise rip is
+                        // the LSTAR value, not the next userspace insn.
+                        // I assume this is because of a delay with KVM updating
+                        // registers, not because there's more to do in the LSTAR
+                        // kernel code.
+  }
+
+  dprintf("\n");
+
+  // Remove this active coopter
+  std::string name = details->name;
+
+  details->coopter.destroy();
+  delete details->orig_syscall;
+  delete details;
+  active_details.erase({asid, cpu_id});
+
+  // Based on result, update state for the whole hyde program
+  switch (result) {
+    case ExitStatus::FATAL:
+      printf("[HyDE] Fatal error in %s\n", name.c_str());
+    case ExitStatus::FINISHED:
+      if (!pending_exits.contains(name)) {
+        printf("[HyDE] Unloading %s on cpu %d\n", name.c_str(), 0);
+        //try_unload_coopter(details->name, cpu, 0); // XXX multicore guests, need to do for all CPUs?
+        pending_exits.insert(name);
+      }
+      break;
+
+    case ExitStatus::SINGLE_FAILURE:
+      printf("[HyDE] Warning %s experienced a non-fatal failure\n", name.c_str());
+      break;
+
+    case ExitStatus::SUCCESS:
+      // Nothing to do
+      break;
+  }
+
+  // For each pending exit (i.e., coopter that is done), check if any of the injections we're tracking are it
+  for (auto it = pending_exits.begin(); it != pending_exits.end(); ) {
+    // Check if any coopters are still active
+    bool active = false;
+    for (const auto &kv : active_details) {
+      if (kv.second->name == *it) {
+        active = true;
+        break;
+      }
+    }
+
+    if (!active) {
+      if (try_unload_coopter(*it, cpu, 0)) { // Safe to unload now
+        printf("[HyDE] Unloaded %s\n", it->c_str());
+        //it = std::erase_if(pending_exits, [&](const auto& name) { return name == *it; });
+        //it = std::remove_if(pending_exits.begin(), pending_exits.end(), [&](const auto& name) { return name == *it; });
+        it = pending_exits.erase(it);
+        continue;
+      } else {
+        printf("ERROR erasing %s\n", it->c_str());
+      }
+    }
+    ++it;
   }
   assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &new_regs) == 0);
 }

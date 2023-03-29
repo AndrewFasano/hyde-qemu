@@ -375,12 +375,17 @@ void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long 
   // we need to restore registers to get the right syscall number in place of the last return value.
   set_regs_to_syscall(a, cpu, &sysc, &a->orig_regs);
 
-  // If the injected syscall won't return in the same ASID, we can't catch it. There are two implications:
+  // If the injected syscall won't return to the next PC the same ASID after this syscall, we can't catch it.
+  // This happens if the process is exiting, or if it jumps control flow to somwhere else (i.e., execve)
+  // There are two implications for this:
   //  1) We can't clean up our state for this coroutine on the return
   //  2) The user can't run more syscalls in this coroutine
 
   // As such, we clean up *here*, but we also detect if the coroutine is still alive and warn in that case.
-  if (unlikely(sysc.callno == __NR_exit || sysc.callno == __NR_exit_group)) {
+  if (unlikely(sysc.callno == __NR_execve || \
+               sysc.callno == __NR_execveat || \
+               sysc.callno == __NR_exit || \
+               sysc.callno == __NR_exit_group)) {
     // Hmm, this co-routine isn't run again until the on sysret. It might be dangerous to explicitly run it here, but YOLO
 
     // Pretend we did run it and got a result for the sake of the co-routine which could still (incorrectly) use this value.

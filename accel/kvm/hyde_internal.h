@@ -68,7 +68,7 @@ extern "C" { // Called by KVM on syscall/sysret
   void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int fs, long unsigned int retval,
                   long unsigned int asid, long unsigned int pc, long unsigned int rsp);
 #ifdef __cplusplus
-
+}
 #endif
 
 #endif

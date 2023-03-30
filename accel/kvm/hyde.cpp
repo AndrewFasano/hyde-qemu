@@ -303,7 +303,7 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
   asid_details *a = NULL;
   bool first = false;
 
-  printf("syscall %lx cpu %lu callno %lu, pc %lx, rsp %lx fs %lx\n", asid, cpu_id, callno, pc, rsp, fs);
+  //printf("syscall %lx cpu %lu callno %lu, pc %lx, rsp %lx fs %lx\n", asid, cpu_id, callno, pc, rsp, fs);
 
   if (unlikely(!is_syscall_targetable(callno, asid))) {
     return;
@@ -427,7 +427,7 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
 void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned int retval, long unsigned int asid, long unsigned int pc, long unsigned int rsp) {
 
   // XXX: SLOW, DEBUGGING - AH ha, sregs.fs.base can distinguish between threads with same asid!
-  printf("sysret %lx cpu %lu to pc %lx rsp %lx fs %lx\n", asid, cpu_id, pc, rsp, fs);
+  //printf("sysret %lx cpu %lu to pc %lx rsp %lx fs %lx\n", asid, cpu_id, pc, rsp, fs);
 
   auto iter = active_details.find({asid, cpu_id, fs});
   if (likely(iter == active_details.end())) {

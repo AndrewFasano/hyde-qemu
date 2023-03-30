@@ -139,6 +139,11 @@ int getregs(void *cpu, struct kvm_regs *regs) {
   return kvm_vcpu_ioctl(cpu, KVM_GET_REGS, regs);
 }
 
+// special regs
+int getsregs(void *cpu, struct kvm_sregs *sregs) {
+  return kvm_vcpu_ioctl(cpu, KVM_GET_SREGS, sregs);
+}
+
 int setregs(asid_details *r, struct kvm_regs *regs) {
   return kvm_vcpu_ioctl(r->cpu, KVM_SET_REGS, &regs) == 0;
 }
@@ -233,7 +238,7 @@ bool is_syscall_targetable(int callno, unsigned long asid) {
   return true;
 }
 
-asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, int callno, unsigned long asid, unsigned long pc) {
+asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned long fs, int callno, unsigned long asid, unsigned long pc) {
   asid_details *a = NULL;
   for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
     if (pending_exits.contains(pair.first)) {
@@ -276,7 +281,7 @@ asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, int callno,
       a->orig_syscall->args[i].is_ptr = false;
     }
 
-    active_details[{asid, cpu_id}] = a;
+    active_details[{asid, cpu_id, fs}] = a;
 
     // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
     // The value we get in rflags won't match the value that emulate_syscall is putting
@@ -285,7 +290,7 @@ asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, int callno,
     // XXX: Why don't we need/want that anymore?
 
     // XXX: this *runs* the coopter function up until its first co_yield/co_ret
-    a->coopter = (*f)(active_details[{asid, cpu_id}]).h_;
+    a->coopter = (*f)(active_details[{asid, cpu_id, fs}]).h_;
     a->name = pair.first;
     return a;
   }
@@ -293,20 +298,33 @@ asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, int callno,
   return NULL;
 }
 
-void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long unsigned int asid, long unsigned int pc,
-                           long unsigned int orig_rcx, long unsigned int orig_r11) {
+void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned int callno, long unsigned int asid, long unsigned int pc,
+                           long unsigned int orig_rcx, long unsigned int orig_r11, long unsigned int rsp) {
   asid_details *a = NULL;
   bool first = false;
+
+  printf("syscall %lx cpu %lu callno %lu, pc %lx, rsp %lx fs %lx\n", asid, cpu_id, callno, pc, rsp, fs);
 
   if (unlikely(!is_syscall_targetable(callno, asid))) {
     return;
   }
 
-  if (likely(!active_details.contains({asid, cpu_id}))) {
+  if (likely(!active_details.contains({asid, cpu_id, fs}))) {
     // No active co-opter for asid - check to see if any want to start
     // If we find one, we initialize it, running to the first yield/ret
     // We won't launch a new co-opter if it's trying to unload
-    a = find_and_init_coopter(cpu, cpu_id, callno, asid, (unsigned long)pc);
+
+    #if 0
+    // XXX DEBUG: sanity check - do we have asid, cpu_id with a different fs already?
+    for (const auto &pair : active_details) { // For each coopter, see if it's interested. First to return non-null wins
+      if (std::get<0>(pair.first) == asid && std::get<1>(pair.first) == cpu_id) {
+        printf("AH ha, multiple FS for same asid/cpu pair! %lx, %lx: %lx vs %lx\n", asid, cpu_id, fs, std::get<2>(pair.first));
+      }
+    }
+    #endif
+
+
+    a = find_and_init_coopter(cpu, cpu_id, fs, callno, asid, (unsigned long)pc);
     if (likely(a == NULL)) {
       return; 
     }
@@ -314,12 +332,13 @@ void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long 
     a->orig_r11 = orig_r11;
 
     first = true;
-    dprintf("New coopter in {%lx, %lx} at %lx: ", asid, cpu_id, pc);
+    //dprintf("New coopter in {%lx, %lx} at %lx: ", asid, cpu_id, pc);
+    //printf("New coopter from %s to run before %ld in {%lx, %lx} at %lx\n", a->name.c_str(), callno, asid, cpu_id, pc);
   } else {
     // We already have a co-opter for this asid, it should have been
     // advanced on the last syscall return
     dprintf("Existing coopter in {%lx, %lx} at %lx: ", asid, cpu_id, pc);
-    a = active_details.at({asid, cpu_id});
+    a = active_details.at({asid, cpu_id, fs});
   }
 
   //printf("Syscall in active %lx on cpu %ld: callno: %ld\n", asid, cpu_id, callno);
@@ -349,7 +368,7 @@ void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long 
       // This is probably a user error - warn about it.
       printf("USER ERROR in %s: co-opter ran 0 syscalls (not even original) and left result unspecified.\n", a->name.c_str());
       a->coopter.destroy();
-      active_details.erase({asid, cpu_id});
+      active_details.erase({asid, cpu_id, fs});
       return;
     }
 
@@ -391,19 +410,26 @@ void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long 
     // Pretend we did run it and got a result for the sake of the co-routine which could still (incorrectly) use this value.
     // This is a bit tricky. We can either falsely advance the coopter with an unset retval (!!) here in order to see if it's
     // going to try injecting more syscalls and conditionally warn. Or we can not advance it and never warn. We pick the former.
-    a->coopter(); // Advance the coroutine such that it will finish, assuming it had no more syscalls to yield.
-    if (!a->coopter.done()) {
-      printf("USER ERROR in %s: co-opter runs non-returning syscall %lu but it wasn't the last syscall in the co-opter. Subsequent logic in co-opter will not run\n", a->name.c_str(), sysc.callno);
-    }
+
+    // Hmm, running th coopter willy-nilly was a bad idea. Let's not do that
+
+    //a->coopter(); // Advance the coroutine such that it will finish, assuming it had no more syscalls to yield.
+    //if (!a->coopter.done()) {
+      //printf("USER ERROR in %s: co-opter runs non-returning syscall %lu but it wasn't the last syscall in the co-opter. Subsequent logic in co-opter will not run\n", a->name.c_str(), sysc.callno);
+    //}
     a->coopter.destroy();
     delete a->orig_syscall;
     delete a;
-    active_details.erase({asid, cpu_id});
+    active_details.erase({asid, cpu_id, fs});
   }
 }
 
-void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int retval, long unsigned int asid, long unsigned int pc) {
-  auto iter = active_details.find({asid, cpu_id});
+void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned int retval, long unsigned int asid, long unsigned int pc, long unsigned int rsp) {
+
+  // XXX: SLOW, DEBUGGING - AH ha, sregs.fs.base can distinguish between threads with same asid!
+  printf("sysret %lx cpu %lu to pc %lx rsp %lx fs %lx\n", asid, cpu_id, pc, rsp, fs);
+
+  auto iter = active_details.find({asid, cpu_id, fs});
   if (likely(iter == active_details.end())) {
     // We don't have a coopter for this asid, so will leave it alone
     return;
@@ -492,7 +518,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int retval, long u
   details->coopter.destroy();
   delete details->orig_syscall;
   delete details;
-  active_details.erase({asid, cpu_id});
+  active_details.erase({asid, cpu_id, fs});
 
   // Based on result, update state for the whole hyde program
   switch (result) {

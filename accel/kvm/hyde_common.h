@@ -14,7 +14,7 @@
 // Additionally it provides prototypes for KVM-hyde functions that may be used by hyde programs.
 
 //#define WINDOWS
-#define HYDE_DEBUG
+//#define HYDE_DEBUG
 
 
 struct hsyscall_arg {
@@ -136,6 +136,14 @@ inline uint64_t get_arg(struct kvm_regs s, RegIndex idx) {
         case RegIndex::ARG5: return s.r9;
         default: throw std::runtime_error("Invalid register index");
     }
+}
+
+void dump_syscall(hsyscall *s) {
+  printf("Syscall %lu:", s->callno);
+  for (int i=0; i<s->nargs; i++) {
+    printf(" %lu", s->args[i].value);
+  }
+  puts("");
 }
 
 // Function to set the argument value by index given an hsyscall_arg

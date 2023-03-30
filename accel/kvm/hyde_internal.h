@@ -14,7 +14,7 @@
 // called by external code.
 
 std::map<std::string, coopter_f*> coopters; // function which returns coroutine or NULL
-std::map<std::pair<long unsigned int, long unsigned int>, asid_details*> active_details; // (asid,cpuid)->details
+std::map<std::tuple<long unsigned int, long unsigned int, long unsigned int>, asid_details*> active_details; // (asid,cpuid,fs.base)->details
 std::set<long unsigned int> did_seccomp;
 
 // This param is from our custom kernel in uapi/linux/kvm.h
@@ -61,10 +61,14 @@ bool is_syscall_targetable(int callno, unsigned long asid);
 asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, unsigned long pc);
 extern "C" { // Called by KVM on syscall/sysret
 #endif
-  void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int callno, long unsigned int asid, long unsigned int pc, long unsigned int orig_rcx, long unsigned int orig_r11);
-  void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int retval, long unsigned int asid, long unsigned int pc);
+  void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int fs, long unsigned int callno,
+                  long unsigned int asid, long unsigned int pc,
+                  long unsigned int orig_rcx, long unsigned int orig_r11, long unsigned int rsp);
+
+  void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int fs, long unsigned int retval,
+                  long unsigned int asid, long unsigned int pc, long unsigned int rsp);
 #ifdef __cplusplus
-} 
+
 #endif
 
 #endif

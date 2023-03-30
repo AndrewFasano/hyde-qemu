@@ -2912,19 +2912,24 @@ int kvm_cpu_exec(CPUState *cpu)
 
         case KVM_EXIT_TPR_ACCESS:
           {
-            bool is_syscall = run->papr_hcall.args[2] == 1;
-            //CPUX86State *x86_env = &X86_CPU(cpu)->env;
+            bool is_syscall = run->papr_hcall.args[0];
+
+            unsigned long cpu_id = run->papr_hcall.args[1]; // cpu id in 5 on syscall
+            unsigned long asid = run->papr_hcall.args[2];
+            unsigned long fs = run->papr_hcall.args[3];
+            unsigned long pc = run->papr_hcall.args[4];
+            // ... skip only syscall args
+            unsigned long rsp = run->papr_hcall.args[7];
+
+            unsigned long rax = run->papr_hcall.nr; // callno / return value
 
             if (is_syscall) {
-                unsigned long cpu_id = run->papr_hcall.args[5]; // cpu id in 5 on syscall
-              on_syscall((void*)cpu, cpu_id, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0],
-                  run->papr_hcall.args[3], /* orig_rcx */
-                  run->papr_hcall.args[4] /* orig_r11 */
-                  );
-            }else{
-              // Sysret
-                unsigned long cpu_id = run->papr_hcall.args[3]; // cpu id in 3 on sysret
-              on_sysret((void*)cpu, cpu_id, run->papr_hcall.nr, run->papr_hcall.args[1], run->papr_hcall.args[0]);
+              unsigned long orig_rcx = run->papr_hcall.args[5];
+              unsigned long orig_r11 = run->papr_hcall.args[6];
+
+              on_syscall((void*)cpu, cpu_id, fs, rax, asid, pc, orig_rcx, orig_r11, rsp);
+            } else {
+              on_sysret((void*)cpu, cpu_id, fs, rax, asid, pc, rsp);
             }
           }
           ret = 0;

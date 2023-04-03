@@ -22,6 +22,14 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 
+#define DEBUG_LOG // Log every syscall/sysret with some register info to /tmp/trace.txt
+
+#ifdef DEBUG_LOG
+#include <iostream>
+#include <fstream>
+#endif
+
+
 #include "qemu/compiler.h"
 #include "exec/hwaddr.h" // for hwaddr typedef
 //#include "accel/kvm/kvm-cpus.h" // for kvm_host_addr_from_physical_memory
@@ -32,7 +40,7 @@ extern "C" int kvm_host_addr_from_physical_memory(hwaddr gpa, hwaddr *phys_addr)
 
 std::set<std::string> pending_exits = {};
 
-void dprintf(const char *fmt, ...) {
+void hyde_printf(const char *fmt, ...) {
 #ifdef HYDE_DEBUG
     va_list ap;
     va_start(ap, fmt);
@@ -184,7 +192,7 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
     memcpy(&r, orig, sizeof(struct kvm_regs));
     set_arg(r, RegIndex::CALLNO, sysc->callno);
                                   // Arguments vary by OS
-    //dprintf("Applying syscall to registers:");
+    //hyde_printf("Applying syscall to registers:");
 
 #ifdef WINDOWS
     if (sysc->nargs > 0) r.r10 = sysc->args[0];
@@ -298,12 +306,25 @@ asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned lo
   return NULL;
 }
 
+#ifdef DEBUG_LOG
+static bool file_open = false;
+static std::ofstream f;
+#endif
+
+
 void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned int callno, long unsigned int asid, long unsigned int pc,
                            long unsigned int orig_rcx, long unsigned int orig_r11, long unsigned int rsp) {
   asid_details *a = NULL;
   bool first = false;
 
-  //printf("syscall %lx cpu %lu callno %lu, pc %lx, rsp %lx fs %lx\n", asid, cpu_id, callno, pc, rsp, fs);
+#ifdef DEBUG_LOG
+  if (!file_open) {
+	  f.open("/tmp/trace.txt", std::ios::out);
+	  file_open = true;
+  }
+  f << "syscall " << std::hex << asid << " cpu " << cpu_id << " callno " << callno << ", pc " << pc << " rsp " << rsp << " fs " << fs << std::endl;
+  return;
+#endif
 
   if (unlikely(!is_syscall_targetable(callno, asid))) {
     return;
@@ -332,12 +353,12 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
     a->orig_r11 = orig_r11;
 
     first = true;
-    //dprintf("New coopter in {%lx, %lx} at %lx: ", asid, cpu_id, pc);
+    //hyde_printf("New coopter in {%lx, %lx} at %lx: ", asid, cpu_id, pc);
     //printf("New coopter from %s to run before %ld in {%lx, %lx} at %lx\n", a->name.c_str(), callno, asid, cpu_id, pc);
   } else {
     // We already have a co-opter for this asid, it should have been
     // advanced on the last syscall return
-    dprintf("Existing coopter in {%lx, %lx} at %lx: ", asid, cpu_id, pc);
+    hyde_printf("Existing coopter in {%lx, %lx} at %lx: ", asid, cpu_id, pc);
     a = active_details.at({asid, cpu_id, fs});
   }
 
@@ -354,7 +375,7 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
   if (likely(!a->coopter.done())) {
     // We have something to inject
     sysc = promise.value_;
-    dprintf("have syscall to inject: %lu\n", sysc.callno);
+    hyde_printf("have syscall to inject: %lu\n", sysc.callno);
 
   } else if (unlikely(first)) {
     // Nothing to inject and this is the first syscall
@@ -379,7 +400,7 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
     sysc.callno = SKIP_SYSNO;
     sysc.has_retval = true;
     sysc.retval = a->orig_syscall->retval;
-    dprintf("skip original (%ld) replace with %ld and set RV to %lx\n", a->orig_syscall->callno, sysc.callno, a->orig_syscall->retval);
+    hyde_printf("skip original (%ld) replace with %ld and set RV to %lx\n", a->orig_syscall->callno, sysc.callno, a->orig_syscall->retval);
 
   } else {
     // Unreachable.
@@ -427,7 +448,15 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
 void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned int retval, long unsigned int asid, long unsigned int pc, long unsigned int rsp) {
 
   // XXX: SLOW, DEBUGGING - AH ha, sregs.fs.base can distinguish between threads with same asid!
-  //printf("sysret %lx cpu %lu to pc %lx rsp %lx fs %lx\n", asid, cpu_id, pc, rsp, fs);
+
+#ifdef DEBUG_LOG
+  if (!file_open) {
+	  f.open("/tmp/trace.txt", std::ios::out);
+	  file_open = true;
+  }
+  f << "sysret " << std::hex << asid << " cpu " << cpu_id << " to pc " << pc << " rsp " << rsp << " fs " << fs << std::endl;
+  return;
+#endif
 
   auto iter = active_details.find({asid, cpu_id, fs});
   if (likely(iter == active_details.end())) {
@@ -437,15 +466,15 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
 
   asid_details *details = iter->second;
 
-  dprintf("\tAfter injected sc in %lx:", asid);
+  hyde_printf("\tAfter injected sc in %lx:", asid);
   // If hyde program wants to finish and set a retval without running another
   // syscall, it can set orig_syscall->retval and orig_syscall->has_retval
   // Then we'll just set this to the retval on the sysret
   if (unlikely(details->orig_syscall->has_retval)) {
-    dprintf("Did nop (really %lu) with rv=%lx.", details->orig_syscall->callno, retval);
+    hyde_printf("Did nop (really %lu) with rv=%lx.", details->orig_syscall->callno, retval);
   } else {
     details->last_sc_retval = (uint64_t)retval;
-    dprintf("rv=%lx.", retval);
+    hyde_printf("rv=%lx.", retval);
   }
   // If we set has_retval, it's in a funky state - we need to advance it so it will finish, otherwise we'll
   // keep yielding the last (no-op) syscall over and over again
@@ -458,7 +487,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
 
   if (!details->coopter.done()) {
     // We have more to do, re-execute the syscall instruction, which will hit on_syscall and then this fn again.
-    dprintf("Not done, go back to %lx\n", pc-2);
+    hyde_printf("Not done, go back to %lx\n", pc-2);
     new_regs.rip = pc-2; // Take it back now, y'all
     assert(kvm_vcpu_ioctl(cpu, KVM_SET_REGS, &new_regs) == 0);
     return;
@@ -475,7 +504,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
   struct kvm_regs oldregs;
 #ifdef HYDE_DEBUG
   getregs(details, &oldregs);
-  dprintf("Done, return to %lx. ", pc); 
+  hyde_printf("Done, return to %lx. ", pc); 
 #endif
 
 
@@ -484,7 +513,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
     // This is how we'd do INJECT_SC_A, ORIG_SC, INJECT_SC_B and
     // pretend nothing was injected
     new_regs.rax = details->orig_syscall->retval;
-    dprintf("change return to be %lx\n", details->orig_syscall->retval);
+    hyde_printf("change return to be %lx\n", details->orig_syscall->retval);
   } else {
     // We weren't told the orig_syscall has a retval, that means the last
     // return value shoudl be what we pass back. This is how we'd do
@@ -510,7 +539,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
                         // kernel code.
   }
 
-  dprintf("\n");
+  hyde_printf("\n");
 
   // Remove this active coopter
   std::string name = details->name;

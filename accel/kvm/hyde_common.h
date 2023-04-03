@@ -138,6 +138,7 @@ inline uint64_t get_arg(struct kvm_regs s, RegIndex idx) {
     }
 }
 
+#if 0
 void dump_syscall(hsyscall *s) {
   printf("Syscall %lu:", s->callno);
   for (int i=0; i<s->nargs; i++) {
@@ -145,6 +146,7 @@ void dump_syscall(hsyscall *s) {
   }
   puts("");
 }
+#endif
 
 // Function to set the argument value by index given an hsyscall_arg
 inline void set_arg(struct kvm_regs& s, RegIndex idx, hsyscall_arg arg) {

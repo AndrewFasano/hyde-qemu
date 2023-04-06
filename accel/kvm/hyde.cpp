@@ -203,7 +203,7 @@ void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struc
 
 #else
 #define N_STACK 6u
-    for (int i = 0; i < std::max(N_STACK, sysc->nargs); i++) {
+    for (size_t i = 0; i < std::max(N_STACK, sysc->nargs); i++) {
         set_arg(r, (RegIndex)i, sysc->args[i]);
     }
 #endif
@@ -553,6 +553,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
   switch (result) {
     case ExitStatus::FATAL:
       printf("[HyDE] Fatal error in %s\n", name.c_str());
+      [[fallthrough]]; // Fancy C++ism to fix compiler warning about falling through
     case ExitStatus::FINISHED:
       if (!pending_exits.contains(name)) {
         printf("[HyDE] Unloading %s on cpu %d\n", name.c_str(), 0);

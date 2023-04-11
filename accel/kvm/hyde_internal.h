@@ -10,6 +10,8 @@
 #include <string>
 #include "hyde_common.h"
 
+#define R14_INJECTED 0xdeadbeef
+
 // The following variables and functions are used in kvm/hyde.cpp but not
 // called by external code.
 
@@ -63,10 +65,11 @@ extern "C" { // Called by KVM on syscall/sysret
 #endif
   void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int fs, long unsigned int callno,
                   long unsigned int asid, long unsigned int pc,
-                  long unsigned int orig_rcx, long unsigned int orig_r11, long unsigned int rsp);
+                  long unsigned int orig_rcx, long unsigned int orig_r11, long unsigned int r14, long unsigned int r15);
 
   void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int fs, long unsigned int retval,
-                  long unsigned int asid, long unsigned int pc, long unsigned int rsp);
+                  long unsigned int asid, long unsigned int pc, long unsigned int r14,
+                  long unsigned int r15);
 #ifdef __cplusplus
 }
 #endif

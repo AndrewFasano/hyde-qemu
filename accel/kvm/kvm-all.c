@@ -2919,17 +2919,18 @@ int kvm_cpu_exec(CPUState *cpu)
             unsigned long fs = run->papr_hcall.args[3];
             unsigned long pc = run->papr_hcall.args[4];
             // ... skip only syscall args
-            unsigned long rsp = run->papr_hcall.args[7];
+            //unsigned long rsp = run->papr_hcall.args[7];
+            unsigned long r14 = run->papr_hcall.args[7];
+            unsigned long r15 = run->papr_hcall.args[8];
 
             unsigned long rax = run->papr_hcall.nr; // callno / return value
 
             if (is_syscall) {
               unsigned long orig_rcx = run->papr_hcall.args[5];
               unsigned long orig_r11 = run->papr_hcall.args[6];
-
-              on_syscall((void*)cpu, cpu_id, fs, rax, asid, pc, orig_rcx, orig_r11, rsp);
+              on_syscall((void*)cpu, cpu_id, fs, rax, asid, pc, orig_rcx, orig_r11, r14, r15);
             } else {
-              on_sysret((void*)cpu, cpu_id, fs, rax, asid, pc, rsp);
+              on_sysret((void*)cpu, cpu_id, fs, rax, asid, pc, r14, r15);
             }
           }
           ret = 0;

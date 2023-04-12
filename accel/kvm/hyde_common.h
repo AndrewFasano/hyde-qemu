@@ -104,6 +104,7 @@ struct asid_details {
   hsyscall *orig_syscall; // The original system call that was about to run in the target process
   void* cpu; // Opaque pointer we use internally
   uint64_t last_sc_retval; // Return value to be set after simulating a system call
+  bool child; // True if this is a child process
 
   uint64_t asid;
 

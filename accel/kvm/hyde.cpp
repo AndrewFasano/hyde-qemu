@@ -25,7 +25,7 @@
 #include <sys/syscall.h>
 
 //#define DEBUG_LOG // Log every syscall/sysret with some register info to /tmp/trace.txt
-#define HYDE_DEBUG
+//#define HYDE_DEBUG
 
 #ifdef DEBUG_LOG
 #include <iostream>
@@ -40,14 +40,6 @@ extern "C" int kvm_host_addr_from_physical_memory(hwaddr gpa, hwaddr *phys_addr)
 #include "hyde_common.h"
 #include "hyde_internal.h"
 
-#define IS_NORETURN_SC(x) x == __NR_execve || \
-                          x == __NR_execveat || \
-                          x == __NR_exit || \
-                          x == __NR_exit_group
-
-std::set<asid_details*> coopted_procs = {}; // Procs that have been coopted
-std::set<std::string> pending_exits = {}; // Hyde progs that have requested to exit
-
 void hyde_printf(const char *fmt, ...) {
 #ifdef HYDE_DEBUG
     va_list ap;
@@ -57,7 +49,6 @@ void hyde_printf(const char *fmt, ...) {
 #endif
 }
 
-#define PRINT_REG(REG) std::cout << "  " << #REG << ": " << std::hex << std::setw(16) << std::setfill('0') << regs.REG << std::endl;
 void pretty_print_kvm_regs(const struct kvm_regs &regs) {
     std::cout << "kvm_regs {" << std::endl;
 
@@ -104,22 +95,29 @@ int kvm_host_addr_from_physical_memory_ext(uint64_t gpa, uint64_t *phys_addr) {
 
 void enable_syscall_introspection(void* cpu, int idx) {
   assert(cpu != nullptr);
+  //printf("Enable syscall introspection on CPU %d at %p\n", idx, cpu);
   assert(kvm_vcpu_ioctl_pause_vm(cpu, KVM_HYDE_TOGGLE, 1) == 0);
 }
 
-void disable_syscall_introspection(void* cpu) {
+void disable_syscall_introspection(void* cpu, int idx) {
   assert(cpu != nullptr);
+  //printf("Disable syscall introspection on CPU %d at %p\n", idx, cpu);
   assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 0) == 0);
 }
 
 bool try_load_coopter(std::string path, void* cpu, int idx) {
-  if (coopters.count(path)) {
-    if (idx == 0) {
-      printf("Already have %s capability loaded\n", path.c_str());
-      return false;
-    }
-      return true; // Cap already loaded for 0th CPU
+
+  if (introspection_cpus.count(idx) == 0) {
+    enable_syscall_introspection(cpu, idx);
+    introspection_cpus.insert(idx);
+    //printf("Enabled syscall introspection on CPU %d at %p\n", idx, cpu);
   }
+
+  if (coopters.count(path)) {
+    //printf("Already have %s capability loaded\n", path.c_str());
+    return true;
+  }
+
   void* handle = dlopen(path.c_str(), RTLD_LAZY);
   if (handle == NULL) {
     printf("Could not open capability at %s: %s\n", path.c_str(), dlerror());
@@ -133,9 +131,7 @@ bool try_load_coopter(std::string path, void* cpu, int idx) {
     dlclose(handle);
     return false;
   }
-  if (coopters.empty()) {
-    enable_syscall_introspection(cpu, idx);
-  }
+
   coopters[path] = *do_coopt;
   return true;
 }
@@ -143,35 +139,35 @@ bool try_load_coopter(std::string path, void* cpu, int idx) {
 bool try_unload_coopter(std::string path, void* cpu, int idx) {
   // TODO: can we also support non-absolute paths?
   if (!coopters.count(path)) {
-    if (idx == 0) {
-      printf("Capability %s has not been loaded\n", path.c_str());
-      return false;
-    }
+    printf("Capability %s has not been loaded\n", path.c_str());
     return true; // Already unloaded for 0th cpu??
   }
   coopters.erase(path);
   if (coopters.empty()) {
-    disable_syscall_introspection(cpu);
+    disable_syscall_introspection(cpu, idx);
   }
   return true;
 }
 
 bool kvm_unload_hyde(void *cpu, int idx) {
-  // For each in coopters,
+  // Monitor request hits here. This can't work this simply though
+  // because if any are actively coopted, we need to wait for them to finish
   for (auto it = coopters.begin(); it != coopters.end(); ++it) {
     printf("Unloading %s\n", it->first.c_str());
     coopters.erase(it++);
   }
 
-  disable_syscall_introspection(cpu);
+  disable_syscall_introspection(cpu, idx);
   return true;
 }
 
 bool kvm_load_hyde_capability(const char* path, void *cpu, int idx) {
+  //printf("Loading %s on cpu %d\n", path, idx);
   return try_load_coopter(std::string(path), cpu, idx);
 }
 
 bool kvm_unload_hyde_capability(const char* path, void *cpu, int idx) {
+  printf("Unload %s on cpu %d\n", path, idx);
   return try_unload_coopter(std::string(path), cpu, idx);
 }
 
@@ -249,16 +245,23 @@ bool set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc) {
     // AKA we can clobber noreturn syscalls with others
     // and catch the results,
 
-      if (likely(!(IS_NORETURN_SC(sysc->callno) || \
+      if (likely(!(IS_NORETURN_SC(sysc->callno) /*|| \
               sysc->callno == __NR_fork || \
-              sysc->callno == __NR_rt_sigreturn || \
-              sysc->callno == __NR_clone))) {
+              sysc->callno == __NR_clone)*/))) {
         //printf("Clobbering scratch regs for %lu\n", sysc->callno);
         // If it's a noreturn, fork or clone, we can't do this. Probably clone3 too?
         set_magic_values = true;
         //r.rflags = (r.rflags & ~0x2); // Unset bit 1 (valid)
         r.r14 = R14_INJECTED;
         r.r15 = (uint64_t)details;
+
+        if (sysc->callno == __NR_clone || \
+            sysc->callno == __NR_fork || \
+            sysc->callno == __NR_vfork) {
+          // Double return. All of these return 0 in parent, nonzero in child. Neg on error
+          double_return_parents.insert(details);
+          double_return_children.insert(details);
+        }
       }
 
     assert(setregs(cpu, &r) == 0);
@@ -309,14 +312,15 @@ asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned lo
     // by the coopter generator which it returned.
     if (f == NULL) {
       //printf("Should coopt for %d returns NULL\n", callno);
-      return NULL; // XXX: should this be a continue?
+      continue;
     }
 
-    //printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
+    hyde_printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
 
     // Get & store original registers before we run the coopter's first iteration
     details = new asid_details {
       .cpu = cpu,
+      .child = false,
       .asid = asid,
       .use_orig_regs = false,
       .custom_return = 0,
@@ -463,8 +467,47 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
     printf("Warning: sysret from non-injected syscall\n");
     return;
   }
-  // Get the coopter state from r15
-  asid_details *details = (asid_details*)r15; // XXX if we ever get this wrong, we'll crash! Should we have 2 registers to validate?
+
+  // XXX if we ever get this wrong, we'll crash!
+  // Should we have a 2nd register other than r15 to validate? Ideally
+  // something the guest can't ever set normally.
+  asid_details *details = (asid_details*)r15;
+
+  bool has_parent = double_return_parents.count(details);
+  bool has_child = double_return_children.count(details);
+
+  if (has_parent) {
+    // Parent gets negative error or child PID
+    if (retval != 0) {
+      // This is the parent
+      double_return_parents.erase(details);
+      if ((long signed int)retval < 0) {
+        // ...and the parent failed - don't wait for the child
+        double_return_children.erase(details);
+      } else {
+        // Parent was successful and returns first
+        if (has_child) {
+          // Duplicate details in parent so child has its own
+          memcpy(details, &r15, sizeof(asid_details));
+        }
+      }
+    }
+  }
+
+  if (has_child) {
+    // Child gets return value of 0
+    if (retval == 0) {
+      double_return_children.erase(details);
+      details->child = true;
+      
+      if (has_parent) {
+        // Child returns first - duplicate details
+        // so parent has its own
+        memcpy(details, &r15, sizeof(asid_details));
+      }
+    }
+  }
+
   //hyde_printf("Sysret from %s after callno %lu\n", details->name.c_str(), details->orig_syscall->callno);
 
 #ifdef DEBUG_LOG
@@ -521,7 +564,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
   struct kvm_regs regs_on_ret2;
 #ifdef HYDE_DEBUG
   getregs(details, &regs_on_ret2);
-  hyde_printf("Done, return to %lx. ", pc);
+  hyde_printf("Done, contine after sc to %lx. ", pc);
 #endif
 
   // XXX TESTING ONLY
@@ -567,8 +610,8 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
 
   details->coopter.destroy();
   delete details->orig_syscall;
+  coopted_procs.erase(details);
   delete details;
-  //active_details.erase({asid, cpu_id, fs});
 
   // Based on result, update state for the whole hyde program
   switch (result) {

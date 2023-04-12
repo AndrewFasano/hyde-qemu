@@ -15,9 +15,25 @@
 // The following variables and functions are used in kvm/hyde.cpp but not
 // called by external code.
 
-std::map<std::string, coopter_f*> coopters; // function which returns coroutine or NULL
-std::map<std::tuple<long unsigned int, long unsigned int, long unsigned int>, asid_details*> active_details; // (asid,cpuid,fs.base)->details
-std::set<long unsigned int> did_seccomp;
+std::map<std::string, coopter_f*> coopters; // filename -> should_coopt function
+std::set<int> introspection_cpus; // CPUs that have syscall introspection enabled
+
+std::set<long unsigned int> did_seccomp; // Procs that did a seccomp
+std::set<asid_details*> coopted_procs = {}; // Procs that have been coopted
+std::set<std::string> pending_exits = {}; // Hyde progs that have requested to exit
+
+// Procs that we expect to return twice - store once in _parents and once in _children
+// Pop when we no longer expect
+std::set<asid_details*> double_return_parents = {};
+std::set<asid_details*> double_return_children = {};
+
+#define IS_NORETURN_SC(x)(x == __NR_execve || \
+                          x == __NR_execveat || \
+                          x == __NR_exit || \
+                          x == __NR_exit_group || \
+                          x == __NR_rt_sigreturn)
+
+#define PRINT_REG(REG) std::cout << "  " << #REG << ": " << std::hex << std::setw(16) << std::setfill('0') << regs.REG << std::endl;
 
 // This param is from our custom kernel in uapi/linux/kvm.h
 // #define KVM_HYDE_TOGGLE      _IOR(KVMIO,   0xbb, bool)

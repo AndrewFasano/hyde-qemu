@@ -85,11 +85,11 @@ struct HydeCoro {
 };
 
 // The syscCoro type is a coroutine that yields hsyscall objects and returns an exit Status
-typedef HydeCoro<hsyscall, ExitStatus> SyscCoro;
+typedef HydeCoro<hsyscall, ExitStatus> SyscallCoroutine;
 
 // Yields hsyscalls, returns an int - for helper functions
 typedef HydeCoro<hsyscall, int> SyscCoroHelper;
-// coopter_t is a coroutine handle to SyscCoro coroutines
+// coopter_t is a coroutine handle to SyscallCoroutine coroutines
 typedef std::coroutine_handle<HydeCoro<hsyscall, ExitStatus>::promise_type> coopter_t;
 
 /* This structure stores details about a given process that we are co-opting.
@@ -97,7 +97,7 @@ typedef std::coroutine_handle<HydeCoro<hsyscall, ExitStatus>::promise_type> coop
  * It also contains a pointer to the original system call that the process was executing.
  * Finally, it contains a pointer to the original registers that the process was executing.
 */
-struct asid_details {
+struct syscall_context {
   coopter_t coopter; // The coroutine that is simulating the process's execution
   std::string name; // Name (full path) of the hyde program
   struct kvm_regs orig_regs; // The original registers when we started simulating the guest process
@@ -114,7 +114,7 @@ struct asid_details {
 
   unsigned long custom_return; // If set to a non-zero value, we will set the guest's program counter to this address after coopter finishes
 
-  //std::function<void(_asid_details*, void*, unsigned long, unsigned long, unsigned long)> *on_ret; // Unused
+  //std::function<void(_syscall_context*, void*, unsigned long, unsigned long, unsigned long)> *on_ret; // Unused
 };
 
 // Enum for argument indexing into kvm_regs struct
@@ -174,15 +174,16 @@ inline void set_arg(struct kvm_regs& s, RegIndex idx, uint64_t value) {
 }
 
 
-// create_coopt_t functions are called with a bunch of stuff and return a pointer to a function with type SyscCoro(asid_details*)
-typedef SyscCoro(create_coopt_t)(asid_details*);
-// create_coopt_t is function type that is given a few arguments and returns a function pointer function with type create_coopt_t(asid_details*)
+// create_coopt_t functions are called with a bunch of stuff and return a pointer to a function with type SyscallCoroutine(syscall_context*)
+typedef SyscallCoroutine(create_coopt_t)(syscall_context*);
+
+// create_coopt_t is function type that is given a few arguments and returns a function pointer function with type create_coopt_t(syscall_context*)
 typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int, unsigned int);
 
-bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva); // Coroutine helpers use this for translation
+bool translate_gva(syscall_context *r, uint64_t gva, uint64_t* hva); // Coroutine helpers use this for translation
 uint64_t kvm_translate(void *cpu, uint64_t gva);
 int kvm_host_addr_from_physical_memory_ext(uint64_t gpa, uint64_t *phys_addr);
-int getregs(asid_details *r, struct kvm_regs *regs);
+int getregs(syscall_context *r, struct kvm_regs *regs);
 
 // I've never seen this fail, but it feels safer than an assert?
 #define get_regs_or_die(details, outregs) if (getregs(details, outregs) != 0) { printf("getregs failure\n"); co_return ExitStatus::SINGLE_FAILURE;};
@@ -193,5 +194,9 @@ int getregs(asid_details *r, struct kvm_regs *regs);
 extern "C" {
   create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc, unsigned int asid);
 }
+
+// Backwards compatibility
+#define SyscCoro SyscallCoroutine
+#define syscall_context syscall_context
 
 #endif

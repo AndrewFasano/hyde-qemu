@@ -171,7 +171,7 @@ bool kvm_unload_hyde_capability(const char* path, void *cpu, int idx) {
   return try_unload_coopter(std::string(path), cpu, idx);
 }
 
-int getregs(asid_details *r, struct kvm_regs *regs) {
+int getregs(syscall_context *r, struct kvm_regs *regs) {
   return kvm_vcpu_ioctl(r->cpu, KVM_GET_REGS, regs);
 }
 
@@ -184,7 +184,7 @@ int getsregs(void *cpu, struct kvm_sregs *sregs) {
   return kvm_vcpu_ioctl(cpu, KVM_GET_SREGS, sregs);
 }
 
-//int setregs(asid_details *r, struct kvm_regs *regs) {
+//int setregs(syscall_context *r, struct kvm_regs *regs) {
 //  return kvm_vcpu_ioctl(r->cpu, KVM_SET_REGS, &regs) == 0;
 //}
 
@@ -207,7 +207,7 @@ bool can_translate_gva(void*cpu, uint64_t gva) {
 /* Given a GVA, try to translate it to a host address.
  * return indicates success. If success, host address
  * will be set in hva argument. */
-bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva) {
+bool translate_gva(syscall_context *r, uint64_t gva, uint64_t* hva) {
   if (!can_translate_gva(r->cpu, gva)) {
     return false;
   }
@@ -219,7 +219,7 @@ bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva) {
   return true;
 }
 
-bool set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc) {
+bool set_regs_to_syscall(syscall_context* details, void *cpu, hsyscall *sysc) {
     bool set_magic_values = false;
 
     struct kvm_regs r = details->orig_regs;
@@ -298,8 +298,8 @@ bool is_syscall_targetable(int callno, unsigned long asid) {
   return true;
 }
 
-asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned long fs, int callno, unsigned long asid, unsigned long pc) {
-  asid_details *details = NULL;
+syscall_context* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned long fs, int callno, unsigned long asid, unsigned long pc) {
+  syscall_context *details = NULL;
   for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
     if (pending_exits.contains(pair.first)) {
       //printf("Skipping coopter %s because we're waiting to unload it\n", pair.first.c_str());
@@ -318,7 +318,7 @@ asid_details* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned lo
     hyde_printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
 
     // Get & store original registers before we run the coopter's first iteration
-    details = new asid_details {
+    details = new syscall_context {
       .cpu = cpu,
       .child = false,
       .asid = asid,
@@ -376,7 +376,7 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
   return;
 #endif
 
-  asid_details *target_details = NULL;
+  syscall_context *target_details = NULL;
   bool first = false;
 
   // Ignore sigreturn, track seccomp for this asid (and ignore if it's seccomp'd)
@@ -388,7 +388,7 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
   // and pointer to coopter state in r15
 
   if (unlikely(r14 == R14_INJECTED)) {
-    target_details = (asid_details*)r15;
+    target_details = (syscall_context*)r15;
     hyde_printf("Load old coopter for %lx at callno %lu from %p\n", asid, callno, target_details);
   } else if ((target_details = find_and_init_coopter(cpu, cpu_id, fs, callno, asid, (unsigned long)pc))) {
     hyde_printf("Created new coopter for %lx at callno %lu: %p\n", asid, callno, target_details);
@@ -471,7 +471,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
   // XXX if we ever get this wrong, we'll crash!
   // Should we have a 2nd register other than r15 to validate? Ideally
   // something the guest can't ever set normally.
-  asid_details *details = (asid_details*)r15;
+  syscall_context *details = (syscall_context*)r15;
 
   bool has_parent = double_return_parents.count(details);
   bool has_child = double_return_children.count(details);
@@ -488,7 +488,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
         // Parent was successful and returns first
         if (has_child) {
           // Duplicate details in parent so child has its own
-          memcpy(details, &r15, sizeof(asid_details));
+          memcpy(details, &r15, sizeof(syscall_context));
         }
       }
     }
@@ -503,7 +503,7 @@ void on_sysret(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned 
       if (has_parent) {
         // Child returns first - duplicate details
         // so parent has its own
-        memcpy(details, &r15, sizeof(asid_details));
+        memcpy(details, &r15, sizeof(syscall_context));
       }
     }
   }

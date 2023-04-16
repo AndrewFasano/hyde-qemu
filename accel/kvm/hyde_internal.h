@@ -19,13 +19,13 @@ std::map<std::string, coopter_f*> coopters; // filename -> should_coopt function
 std::set<int> introspection_cpus; // CPUs that have syscall introspection enabled
 
 std::set<long unsigned int> did_seccomp; // Procs that did a seccomp
-std::set<asid_details*> coopted_procs = {}; // Procs that have been coopted
+std::set<syscall_context*> coopted_procs = {}; // Procs that have been coopted
 std::set<std::string> pending_exits = {}; // Hyde progs that have requested to exit
 
 // Procs that we expect to return twice - store once in _parents and once in _children
 // Pop when we no longer expect
-std::set<asid_details*> double_return_parents = {};
-std::set<asid_details*> double_return_children = {};
+std::set<syscall_context*> double_return_parents = {};
+std::set<syscall_context*> double_return_children = {};
 
 #define IS_NORETURN_SC(x)(x == __NR_execve || \
                           x == __NR_execveat || \
@@ -65,18 +65,18 @@ extern "C" { // Called by the qemu monitor
   bool kvm_unload_hyde_capability(const char* path, void *cpu, int idx);
 }
 
-int getregs(asid_details*, struct kvm_regs *);
+int getregs(syscall_context*, struct kvm_regs *);
 int getregs(void*, struct kvm_regs *);
-int setregs(asid_details*, struct kvm_regs *);
+int setregs(syscall_context*, struct kvm_regs *);
 int setregs(void*, struct kvm_regs *);
 
-//bool translate_gva(asid_details *r, uint64_t gva, uint64_t* hva); // Used in common
+//bool translate_gva(syscall_context *r, uint64_t gva, uint64_t* hva); // Used in common
 bool can_translate_gva(void*cpu, uint64_t gva);
-void set_regs_to_syscall(asid_details* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig);
+void set_regs_to_syscall(syscall_context* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig);
 bool is_syscall_targetable(int callno, unsigned long asid);
 
 // Main logic - create coopter and advance on syscall/sysret
-asid_details* find_and_init_coopter(void* cpu, int callno, unsigned long asid, unsigned long pc);
+syscall_context* find_and_init_coopter(void* cpu, int callno, unsigned long asid, unsigned long pc);
 extern "C" { // Called by KVM on syscall/sysret
 #endif
   void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int fs, long unsigned int callno,

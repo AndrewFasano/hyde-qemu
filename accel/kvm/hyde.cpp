@@ -333,7 +333,7 @@ syscall_context* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned
     coopted_procs.insert(details);
 
     hyde_printf("Orig syscall:");
-    dump_syscall(details->orig_syscall);
+    //dump_syscall(details->orig_syscall);
 
     // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
     // The value we get in rflags won't match the value that emulate_syscall is putting
@@ -404,7 +404,7 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
     sysc = promise.value_;
 
     hyde_printf("Injecting syscall:");
-    dump_syscall(&sysc);
+    //dump_syscall(&sysc);
     hyde_printf("have syscall to inject: replace %lu with %lu\n", target_details->orig_syscall->callno, sysc.callno);
 
   } else if (!first) {

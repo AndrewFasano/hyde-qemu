@@ -24,22 +24,59 @@ struct hsyscall_arg {
   unsigned int size; // ignored if !is_ptr, otherwise the size of the struct pointed to
   bool copy_out; // if is_ptr and unset, we won't copy the data back out of the guest
   //bool copy_in; // if is_ptr and set, we won't copy the data into the guest NYI
+
+  hsyscall_arg() :
+    value(0),
+    is_ptr(false),
+    guest_ptr(0),
+    size(0),
+    copy_out(false) {};
+
+  hsyscall_arg(uint64_t value):
+    value(value),
+    is_ptr(false),
+    guest_ptr(0),
+    size(0),
+    copy_out(false) {};
 };
 
 /* hsyscall is a struct that represents a system call along with its arguments.
  * An hsyscall can be injected into the guest so long as callno, nargs and args[0...nargs-1] are set.
  * After an hsyscall is injected, retval will bet set to the return value of the syscall and has_retval will be set to true.
 */
-typedef struct {
+struct hsyscall {
   uint64_t callno; // System call number
   unsigned int nargs; // Number of arguments
- hsyscall_arg args[6]; // Arguments for the syscall
+  hsyscall_arg args[6]; // Arguments for the syscall
 
   // After we run
   uint64_t retval;
   bool has_retval;
-} hsyscall;
 
+  hsyscall() :
+    callno(0),
+    nargs(0),
+    retval(0),
+    has_retval(false) {}
+
+  hsyscall(uint64_t callno) :
+    callno(callno),
+    nargs(0),
+    retval(0),
+    has_retval(false) {}
+
+  void set_retval(uint64_t value) {
+    has_retval = true;
+    retval = value;
+  }
+
+  void set_args(unsigned int n, uint64_t* new_args) {
+    for (unsigned int i = 0; i < n && i < 6; i++) {
+      args[i] = hsyscall_arg(new_args[i]);
+    }
+    nargs = n;
+  }
+};
 // Enum for coroutine exit status
 enum class ExitStatus {
     SUCCESS = 0, // OK & do nothing
@@ -115,6 +152,24 @@ struct syscall_context {
   unsigned long custom_return; // If set to a non-zero value, we will set the guest's program counter to this address after coopter finishes
 
   //std::function<void(_syscall_context*, void*, unsigned long, unsigned long, unsigned long)> *on_ret; // Unused
+
+  syscall_context(void *cpu, uint64_t asid) :
+    coopter(nullptr),
+    name(""),
+    orig_regs({}),
+    orig_syscall(nullptr),
+    cpu(cpu),
+    last_sc_retval(0),
+    child(false),
+    asid(asid),
+    orig_rcx(0),
+    orig_r11(0),
+    use_orig_regs(false),
+    custom_return(0) {}
+
+  void setCoopter(coopter_t c) { coopter = c; }
+  coopter_t getCoopter() const { return coopter; }
+
 };
 
 // Enum for argument indexing into kvm_regs struct
@@ -139,13 +194,16 @@ inline uint64_t get_arg(struct kvm_regs s, RegIndex idx) {
     }
 }
 
+// Seems to cause compile time errors only for clean builds
 #if 0
 void dump_syscall(hsyscall *s) {
-  printf("Syscall %lu:", s->callno);
+#ifdef HYDE_DEBUG
+  printf("Syscall %lu (with %d args):", s->callno, s->nargs);
   for (int i=0; i<s->nargs; i++) {
     printf(" %lu", s->args[i].value);
   }
   puts("");
+#endif
 }
 #endif
 

@@ -318,31 +318,22 @@ syscall_context* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned
     hyde_printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
 
     // Get & store original registers before we run the coopter's first iteration
-    details = new syscall_context {
-      .cpu = cpu,
-      .child = false,
-      .asid = asid,
-      .use_orig_regs = false,
-      .custom_return = 0,
-    };
+    details = new syscall_context(cpu, asid);
 
     // Read guest regs from KVM
     assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &details->orig_regs) == 0); //dump_regs(r);
 
     // Create original syscall using info from regs
-    details->orig_syscall = new hsyscall {
-        .callno = get_arg(details->orig_regs, RegIndex::CALLNO),
-        .nargs = 6,
-        .has_retval = false,
-    };
-
-    // Set args using info from regs
+    details->orig_syscall = new hsyscall(get_arg(details->orig_regs, RegIndex::CALLNO));
+    uint64_t args[6];
     for (int i = 0; i < 6; i++) {
-      details->orig_syscall->args[i].value = get_arg(details->orig_regs, (RegIndex)i);
-      details->orig_syscall->args[i].is_ptr = false;
+      args[i] = get_arg(details->orig_regs, (RegIndex)i);
     }
-
+    details->orig_syscall->set_args(6, args);
     coopted_procs.insert(details);
+
+    hyde_printf("Orig syscall:");
+    dump_syscall(details->orig_syscall);
 
     // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
     // The value we get in rflags won't match the value that emulate_syscall is putting
@@ -409,11 +400,18 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
   auto &promise = target_details->coopter.promise();
 
   if (likely(!target_details->coopter.done())) {
-    // We have something to inject, i't stored in the promise value
+    // We have something to inject, it's stored in the promise value
     sysc = promise.value_;
+
+    hyde_printf("Injecting syscall:");
+    dump_syscall(&sysc);
     hyde_printf("have syscall to inject: replace %lu with %lu\n", target_details->orig_syscall->callno, sysc.callno);
 
-  } else if (unlikely(first)) {
+  } else if (!first) {
+    // We shouldn't get here - the coopter is done, but we missed
+    // this on the last sysret we advanced it in? Impossible!
+    assert(0 && "FATAL: Injecting syscall, but from a previously-created co-routine that is done\n");
+  } else {
     // Nothing to inject and this is the first syscall
     // so we need to run a skip! We do this with a "no-op" syscall
     // and hiding the result on return
@@ -435,22 +433,15 @@ void on_syscall(void *cpu, unsigned long cpu_id, unsigned long fs, long unsigned
 
     // We have a return value specified - run the skip syscall
     // and on return, set the return value to the one specified
-    sysc = {
-      .callno = SKIP_SYSNO,
-      .nargs = 0,
-      .retval = target_details->orig_syscall->retval,
-      .has_retval = true
-    };
-    hyde_printf("skip original (%ld) replace with %ld and set RV to %lx\n", target_details->orig_syscall->callno, sysc.callno, target_details->orig_syscall->retval);
+    sysc = hsyscall(SKIP_SYSNO);
+    sysc.set_retval(target_details->orig_syscall->retval);
 
-  } else {
-    assert(0 && "FATAL: Injecting syscall, but from a previously-created co-routine that is done\n");
+    hyde_printf("skip original (%ld) replace with %ld and set RV to %lx\n", target_details->orig_syscall->callno, sysc.callno, target_details->orig_syscall->retval);
   }
 
   // We now have a syscall in sysc yielded from a coopter. It's safe so assume it will almost always be different.
   // So let's set the guest CPU state to the syscall we want to inject. Even if this is the original syscall,
   // we need to restore registers to get the right syscall number in place of the last return value.
-
   if (!set_regs_to_syscall(target_details, cpu, &sysc)) {
     // If it's a noreturn SC, we can't catch it later, clean up now
     target_details->coopter.destroy();

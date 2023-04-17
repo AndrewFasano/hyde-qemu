@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <assert.h>
 #include "hyde/include/plugin_common.h"
 #include "hyde/include/runtime.h"
 
@@ -21,7 +22,7 @@ syscall_context* Runtime::find_and_init_coopter(void* cpu, unsigned long cpu_id,
   return nullptr;
 }
 
-void Runtime::on_syscall(void* cpu, unsigned long cpu_id, unsigned long fs, unsigned long callno, unsigned long asid, unsigned long pc, unsigned long orig_rcx, unsigned long orig_r11, unsigned long r14, unsigned long r15) {
+void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint64_t r11, uint64_t r14, uint64_t r15) {
   // 1. Find and initialize the coopter
   // 2. Create a new syscall_context with find_and_init_coopter
   // 3. Handle the syscall using the created syscall_context and the handle_syscall method
@@ -34,7 +35,7 @@ void Runtime::on_syscall(void* cpu, unsigned long cpu_id, unsigned long fs, unsi
   printf("Syscall\n");
 }
 
-void Runtime::on_sysret(void* cpu, unsigned long cpu_id, unsigned long fs, unsigned long retval, unsigned long asid, unsigned long pc, unsigned long r14, unsigned long r15) {
+void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15) {
   // Handle the syscall return event (implementation not provided in the example)
   printf("Sysret\n");
 }
@@ -59,6 +60,16 @@ std::cerr << "TODO: Implement load_hyde_prog: " << path << std::endl;
 
   coopters[path] = *do_coopt;
 #endif
+  return true;
+}
+
+bool Runtime::unload_all(void* cpu) {
+  assert(0 && "NYI");
+  return true;
+}
+
+bool Runtime::unload_hyde_prog(void* cpu, std::string path) {
+  assert(0 && "NYI");
   return true;
 }
 

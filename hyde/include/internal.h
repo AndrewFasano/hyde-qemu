@@ -5,10 +5,6 @@
 #include <string>
 #include "hyde/include/plugin_common.h"
 
-
-// Our main runtime object -uhhhhh?
-Runtime runtime = Runtime();
-
 // create_coopt_t functions are called with a bunch of stuff and return a pointer to a function with type SyscallCoroutine(syscall_context*)
 //typedef SyscallCoroutine(create_coopt_t)(syscall_context*);
 using create_coopt_t = SyscallCoroutine(*)(syscall_context*);

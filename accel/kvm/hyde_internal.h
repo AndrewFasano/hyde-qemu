@@ -22,6 +22,12 @@ std::set<long unsigned int> did_seccomp; // Procs that did a seccomp
 std::set<syscall_context*> coopted_procs = {}; // Procs that have been coopted
 std::set<std::string> pending_exits = {}; // Hyde progs that have requested to exit
 
+// We really want a int->pair(Coro,name) map so we can lookup names later
+std::unordered_map<int, SyscallCoroutinePtr> syscall_map;
+SyscallCoroutinePtr all_syscalls = nullptr;
+
+
+
 // Procs that we expect to return twice - store once in _parents and once in _children
 // Pop when we no longer expect
 std::set<syscall_context*> double_return_parents = {};

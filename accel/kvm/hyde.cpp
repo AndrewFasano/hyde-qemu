@@ -124,6 +124,7 @@ bool try_load_coopter(std::string path, void* cpu, int idx) {
     return false;
   }
 
+#if 0
   coopter_f* do_coopt;
   do_coopt = (coopter_f*)dlsym(handle, "should_coopt");
   if (do_coopt == NULL) {
@@ -133,6 +134,29 @@ bool try_load_coopter(std::string path, void* cpu, int idx) {
   }
 
   coopters[path] = *do_coopt;
+#endif
+
+  PluginInitFunc init_func = (PluginInitFunc) dlsym(handle, "init_plugin");
+  if (init_func == NULL) {
+    printf("Could not find init function in capability: %s\n", dlerror());
+    dlclose(handle);
+    return false;
+  }
+
+  // We have init fn and we just loaded. Call it to update our maps
+  SyscallCoroutinePtr new_all_syscalls = nullptr;
+  init_func(syscall_map, new_all_syscalls);
+
+  // We'll udpate all_syscalls with new_all_syscalls, unless it was already set
+  if (all_syscalls == nullptr) {
+    all_syscalls = new_all_syscalls;
+    printf("got new syscalls: %lx\n", (uint64_t)*new_all_syscalls);
+    printf("Set all syscalls: %lx\n", (uint64_t)*all_syscalls);
+  }else if (new_all_syscalls != nullptr) {
+    printf("WARNING: two programs try using all_syscalls. This is not supported\n");
+    return false;
+  }
+
   return true;
 }
 
@@ -299,55 +323,101 @@ bool is_syscall_targetable(int callno, unsigned long asid) {
 }
 
 syscall_context* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned long fs, int callno, unsigned long asid, unsigned long pc) {
-  syscall_context *details = NULL;
-  for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
-    if (pending_exits.contains(pair.first)) {
-      //printf("Skipping coopter %s because we're waiting to unload it\n", pair.first.c_str());
-      continue;
-    }
 
-    coopter_f* coopter = pair.second;
-    create_coopt_t *f = (*coopter)(cpu, callno, pc, asid);
-    // if a should_coopt function returns non-null, set this asid up to be coopted
-    // by the coopter generator which it returned.
-    if (f == NULL) {
-      //printf("Should coopt for %d returns NULL\n", callno);
-      continue;
-    }
-
-    hyde_printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
-
-    // Get & store original registers before we run the coopter's first iteration
-    details = new syscall_context(cpu, asid);
-
-    // Read guest regs from KVM
-    assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &details->orig_regs) == 0); //dump_regs(r);
-
-    // Create original syscall using info from regs
-    details->orig_syscall = new hsyscall(get_arg(details->orig_regs, RegIndex::CALLNO));
-    uint64_t args[6];
-    for (int i = 0; i < 6; i++) {
-      args[i] = get_arg(details->orig_regs, (RegIndex)i);
-    }
-    details->orig_syscall->set_args(6, args);
-    coopted_procs.insert(details);
-
-    hyde_printf("Orig syscall:");
-    //dump_syscall(details->orig_syscall);
-
-    // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
-    // The value we get in rflags won't match the value that emulate_syscall is putting
-    // into rflags - so we compute it ourselves
-    //a->orig_regs.rflags = (a->orig_regs.r11 & 0x3c7fd7) | 0x2;
-    // XXX: Why don't we need/want that anymore?
-
-    // XXX: this *runs* the coopter function up until its first co_yield/co_ret
-    details->coopter = (*f)(details).h_;
-    details->name = pair.first;
-    return details;
+  SyscallCoroutinePtr f = NULL;
+  if (all_syscalls != nullptr)  {
+    f = all_syscalls;
+  } else {
+    // TODO: check in mappings for this sc, else return NULL
+    return NULL;
   }
 
+  printf("Pre sc with all callno: %d\n", callno);
+
+  syscall_context *details = NULL;
+
+  // Get & store original registers before we run the coopter's first iteration
+  details = new syscall_context(cpu, asid);
+
+  // Read guest regs from KVM
+  assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &details->orig_regs) == 0); //dump_regs(r);
+
+  // Create original syscall using info from regs - TODO optimize?
+  details->orig_syscall = new hsyscall(get_arg(details->orig_regs, RegIndex::CALLNO));
+  uint64_t args[6];
+  for (int i = 0; i < 6; i++) {
+    args[i] = get_arg(details->orig_regs, (RegIndex)i);
+  }
+  details->orig_syscall->set_args(6, args);
+  coopted_procs.insert(details);
+
+  details->coopter = (*f)(details).h_;
+  //details->name = pair.first;
+  details->name = "todo";
+  return details;
+
+#if 0
+  create_coopt_t *f;
+  if (all_syscalls != nullptr)  {
+    f = all_syscalls;
+  } else  {
+    // Lookup mappings for this syscall
+
+  // TODO: return NULL if no map
   return NULL;
+
+    #if 0
+    for (const auto &pair : coopters) { // For each coopter, see if it's interested. First to return non-null wins
+      if (pending_exits.contains(pair.first)) {
+        //printf("Skipping coopter %s because we're waiting to unload it\n", pair.first.c_str());
+        continue;
+      }
+
+      coopter_f* coopter = pair.second;
+      f = (*coopter)(cpu, callno, pc, asid);
+      // if a should_coopt function returns non-null, set this asid up to be coopted
+      // by the coopter generator which it returned.
+      if (f == NULL) {
+        //printf("Should coopt for %d returns NULL\n", callno);
+        continue;
+      }
+    }
+    #endif
+  }
+  //hyde_printf("[CREATE coopter for %s in %lx on cpu %ld before syscall %d at %lx]\n", pair.first.c_str(), asid, cpu_id, callno, pc);
+
+  // Get & store original registers before we run the coopter's first iteration
+  details = new syscall_context(cpu, asid);
+
+  // Read guest regs from KVM
+  assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &details->orig_regs) == 0); //dump_regs(r);
+
+  // Create original syscall using info from regs
+  details->orig_syscall = new hsyscall(get_arg(details->orig_regs, RegIndex::CALLNO));
+  uint64_t args[6];
+  for (int i = 0; i < 6; i++) {
+    args[i] = get_arg(details->orig_regs, (RegIndex)i);
+  }
+  details->orig_syscall->set_args(6, args);
+  coopted_procs.insert(details);
+
+  hyde_printf("Orig syscall:");
+  //dump_syscall(details->orig_syscall);
+
+  // XXX CPU masks rflags with these bits, but it's not shown yet in KVM_GET_REGS -> rflags!
+  // The value we get in rflags won't match the value that emulate_syscall is putting
+  // into rflags - so we compute it ourselves
+  //a->orig_regs.rflags = (a->orig_regs.r11 & 0x3c7fd7) | 0x2;
+  // XXX: Why don't we need/want that anymore?
+
+  // XXX: this *runs* the coopter function up until its first co_yield/co_ret
+
+  printf("INIT\n");
+  details->coopter = (*f)(details).h_;
+  //details->name = pair.first;
+  details->name = "todo";
+  return details;
+#endif
 }
 
 #ifdef DEBUG_LOG

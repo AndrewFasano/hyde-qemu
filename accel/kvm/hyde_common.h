@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <stdexcept>
 #include <cassert>
+#include <functional>
+#include <unordered_map>
 
 // This file provides common datatypes used by both KVM-hyde and hyde programs.
 // Additionally it provides prototypes for KVM-hyde functions that may be used by hyde programs.
@@ -121,13 +123,17 @@ struct HydeCoro {
   std::coroutine_handle<promise_type> h_;
 };
 
-// The syscCoro type is a coroutine that yields hsyscall objects and returns an exit Status
-typedef HydeCoro<hsyscall, ExitStatus> SyscallCoroutine;
+// The SyscallCoroutine type is a coroutine that yields hsyscall objects and returns an exit Status
+using SyscallCoroutine = HydeCoro<hsyscall, ExitStatus>;
 
 // Yields hsyscalls, returns an int - for helper functions
-typedef HydeCoro<hsyscall, int> SyscCoroHelper;
+using SyscCoroHelper = HydeCoro<hsyscall, int>;
+
+
+
 // coopter_t is a coroutine handle to SyscallCoroutine coroutines
-typedef std::coroutine_handle<HydeCoro<hsyscall, ExitStatus>::promise_type> coopter_t;
+using coopter_t = std::coroutine_handle<HydeCoro<hsyscall, ExitStatus>::promise_type>;
+
 
 /* This structure stores details about a given process that we are co-opting.
  * It contains a pointer to the coroutine that is simulating the process's execution.
@@ -233,10 +239,24 @@ inline void set_arg(struct kvm_regs& s, RegIndex idx, uint64_t value) {
 
 
 // create_coopt_t functions are called with a bunch of stuff and return a pointer to a function with type SyscallCoroutine(syscall_context*)
-typedef SyscallCoroutine(create_coopt_t)(syscall_context*);
+//typedef SyscallCoroutine(create_coopt_t)(syscall_context*);
+using create_coopt_t = SyscallCoroutine(*)(syscall_context*);
+
 
 // create_coopt_t is function type that is given a few arguments and returns a function pointer function with type create_coopt_t(syscall_context*)
-typedef create_coopt_t*(coopter_f)(void*, long unsigned int, long unsigned int, unsigned int);
+using coopter_f = create_coopt_t*(*)(void*, long unsigned int, long unsigned int, unsigned int);
+
+// Pointer to an *uninitialized* syscall coroutine function
+
+//SyscallCoroutine (*all_syscalls)(syscall_context*);
+
+//typedef SyscallCoroutine (*CoroutinePtr)(syscall_context*);
+//using CoroutineFnPtr = SyscallCoroutine<void> (*)(int);
+
+using SyscallCoroutinePtr = SyscallCoroutine(*)(syscall_context*);
+using ScMap = std::unordered_map<int, SyscallCoroutinePtr>;
+// Define the interface for a plugin's initialization function
+using PluginInitFunc = void(*)(ScMap& syscall_map,  SyscallCoroutinePtr all);
 
 bool translate_gva(syscall_context *r, uint64_t gva, uint64_t* hva); // Coroutine helpers use this for translation
 uint64_t kvm_translate(void *cpu, uint64_t gva);
@@ -249,9 +269,9 @@ int getregs(syscall_context *r, struct kvm_regs *regs);
 // Type signature for a function *hyde programs* must implement. Implemenations should
 // returns a pointer to a local (extern C) coroutine function if the syscall should be
 // co-opted, otherwise NULL
-extern "C" {
-  create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc, unsigned int asid);
-}
+//extern "C" {
+//  create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc, unsigned int asid);
+//}
 
 // Backwards compatibility
 #define SyscCoro SyscallCoroutine

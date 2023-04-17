@@ -11,7 +11,7 @@
 #define KVM_CPUS_H
 
 #include "sysemu/cpus.h"
-#include "hyde_internal.h"
+#include "hyde/include/qemu_api.h"
 
 int kvm_init_vcpu(CPUState *cpu, Error **errp);
 int kvm_cpu_exec(CPUState *cpu);

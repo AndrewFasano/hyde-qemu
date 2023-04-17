@@ -1,0 +1,81 @@
+#pragma once
+
+#include <memory>
+
+class syscall_context_impl;
+
+// This is the interface plugins have to syscall_context objects
+// They'll need to yield_syscall(ctx, ...) and should be able to get original syscall number/args
+// as well as modifying the original syscall and setting a retval
+
+class syscall_context {
+public:
+    syscall_context(const syscall_context&) = delete;
+    syscall_context& operator=(const syscall_context&) = delete;
+
+    int get_syscall_number() const;
+    struct kvm_regs get_orig_regs() const;
+    // Other public methods for plugins to access syscall_context information
+
+private:
+    friend class Runtime; // Give access to Runtime for constructing and managing syscall_context objects
+
+
+    syscall_context();
+    ~syscall_context();
+
+    // Unique pointer to the implementation
+    std::unique_ptr<syscall_context_impl> pImpl;
+};
+
+#if 0
+
+/* This structure stores details about a given process that we are co-opting.
+ * It contains a pointer to the coroutine that is simulating the process's execution.
+ * It also contains a pointer to the original system call that the process was executing.
+ * Finally, it contains a pointer to the original registers that the process was executing.
+*/
+struct syscall_context {
+
+  //std::function<void(_syscall_context*, void*, unsigned long, unsigned long, unsigned long)> *on_ret; // Unused
+
+  syscall_context(void *cpu, uint64_t asid) :
+    coopter(nullptr),
+    name(""),
+    cpu(cpu),
+    last_sc_retval(0),
+    child(false),
+    asid(asid),
+    orig_rcx(0),
+    orig_r11(0),
+    use_orig_regs(false),
+    custom_return(0) {
+
+        assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &orig_regs) == 0);
+        orig_syscall = new hsyscall(get_arg(RegIndex::CALLNO));
+        uint64_t args[6];
+        for (int i = 0; i < 6; i++) {
+            args[i] = details.get_arg((RegIndex)i);
+        }
+        orig_syscall->set_args(6, args);
+    };
+
+  //void setCoopter(coopter_t c) { coopter = c; }
+  //coopter_t getCoopter() const { return coopter; }
+
+    // Function to get the argument value by index
+    inline uint64_t get_arg(RegIndex idx) {
+        switch (idx) {
+            case RegIndex::CALLNO:
+            case RegIndex::RET: return orig_regs.rax;
+            case RegIndex::ARG0: return orig_regs.rdi;
+            case RegIndex::ARG1: return orig_regs.rsi;
+            case RegIndex::ARG2: return orig_regs.rdx;
+            case RegIndex::ARG3: return orig_regs.r10;
+            case RegIndex::ARG4: return orig_regs.r8;
+            case RegIndex::ARG5: return orig_regs.r9;
+            default: throw std::runtime_error("Invalid register index");
+        }
+    }
+};
+#endif

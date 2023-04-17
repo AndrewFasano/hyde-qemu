@@ -45,6 +45,7 @@
 #include "hw/intc/intc.h"
 #include "hw/rdma/rdma.h"
 #include "monitor/stats.h"
+#include "hyde/include/qemu_api.h"
 
 NameInfo *qmp_query_name(Error **errp)
 {

@@ -50,6 +50,12 @@
 #include "hw/boards.h"
 #include "monitor/stats.h"
 
+#include "hyde/include/qemu_api.h"
+
+void on_syscall(void *cpu, unsigned long cpu_id, long unsigned int fs, long unsigned int callno, long unsigned int asid, long unsigned int pc, long unsigned int orig_rcx, long unsigned int orig_r11, long unsigned int r14, long unsigned int r15);
+
+ void on_sysret(void *cpu, unsigned long cpu_id, long unsigned int fs, long unsigned int retval, long unsigned int asid, long unsigned int pc, long unsigned int r14, long unsigned int r15);
+
 /* This check must be after config-host.h is included */
 #ifdef CONFIG_EVENTFD
 #include <sys/eventfd.h>

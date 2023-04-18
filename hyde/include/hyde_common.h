@@ -15,6 +15,8 @@
 
 // XXX OLD?
 
+#error "You want plugin_common.h for now"
+
 #if 0
 // Seems to cause compile time errors only for clean builds
 void dump_syscall(hsyscall *s) {
@@ -43,7 +45,6 @@ inline void set_arg(struct kvm_regs& s, RegIndex idx, hsyscall_arg arg) {
         default: throw std::runtime_error("Invalid register index");
     }
 }
-#endif
 
 // CALLNO/RET are set as uint64_ts, not hsyscall_args
 inline void set_arg(struct kvm_regs& s, RegIndex idx, uint64_t value) {
@@ -53,6 +54,7 @@ inline void set_arg(struct kvm_regs& s, RegIndex idx, uint64_t value) {
         default: throw std::runtime_error("Invalid register index");
     }
 }
+#endif
 
 
 // create_coopt_t functions are called with a bunch of stuff and return a pointer to a function with type SyscallCoroutine(syscall_context*)
@@ -89,9 +91,5 @@ int getregs(syscall_context *r, struct kvm_regs *regs);
 //extern "C" {
 //  create_coopt_t* should_coopt(void*cpu, long unsigned int callno, long unsigned int pc, unsigned int asid);
 //}
-
-// Backwards compatibility
-#define SyscCoro SyscallCoroutine
-#define syscall_context syscall_context
 
 #endif

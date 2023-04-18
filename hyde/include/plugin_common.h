@@ -1,13 +1,20 @@
 #pragma once
 
-#include "hyde/include/syscall_context.h"
-#include "hyde/include/syscall_coroutine.h"
 #include "runtime.h"
-#include <memory>
+#include "syscall_context.h"
+#include "syscall_coroutine.h"
 #include <functional>
+#include <memory>
 
 using SyscallHandler = std::function<SyscallCoroutine(syscall_context*)>;
-using ExitStatus = int;
+
+enum class ExitStatus {
+    SUCCESS = 0, // OK & do nothing
+    FINISHED = 1, // OK & unload HyDe Program
+    SINGLE_FAILURE = -1, // Failed & do nothing
+    FATAL = -2, // Failed & unload HyDe Program
+};
+
 
 // Enum for argument indexing into kvm_regs struct
 enum class RegIndex {

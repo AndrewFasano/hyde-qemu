@@ -3,7 +3,9 @@
 #include <set>
 #include <map>
 #include <string>
-#include "hyde/include/plugin_common.h"
+#include "plugin_common.h"
+
+// XXX can we drop this file?
 
 // create_coopt_t functions are called with a bunch of stuff and return a pointer to a function with type SyscallCoroutine(syscall_context*)
 //typedef SyscallCoroutine(create_coopt_t)(syscall_context*);

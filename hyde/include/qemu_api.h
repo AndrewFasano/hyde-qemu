@@ -1,7 +1,7 @@
 #pragma once
 
-// Used in kvm-cpus.c? Nope, just in KVM?
-//#define R14_INJECTED 0xdeadbeef
+#include <linux/kvm.h>
+
 //void enable_syscall_introspection(void* cpu, int idx);
 //void disable_syscall_introspection(void* cpu, int idx);
 
@@ -22,6 +22,13 @@ extern "C" {
 
     // QEMU informs HyDE that a sysret has been detected
     void  on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15);
+
+    // Outgoing API: HyDE requests something from QEMU
+    bool translate_gva(void* cpu, uint64_t gva, uint64_t* hva);
+    bool can_translate_gva(void* cpu, uint64_t gva);
+    bool get_regs(void* cpu, struct kvm_regs *outregs);
+    bool set_regs(void* cpu, struct kvm_regs *inregs);
+
 #ifdef __cplusplus
 }
 #endif

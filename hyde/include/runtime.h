@@ -1,48 +1,34 @@
 #pragma once
 
-//#include "plugin_common.h"
-//#include "syscall_context.h"
-#include <iostream>
 #include "syscall_coroutine.h"
+
+#include <dlfcn.h>
+#include <iostream>
+#include <memory>
+#include <set>
+#include <string>
 #include <unordered_map>
 #include <vector>
-#include <memory>
-#include <string>
-#include <map> // can drop later
-#include <dlfcn.h>
-//#include "kvm_vcpu_ioctl_wrapper.h"
 
-class Plugin;
-class syscall_context;
-struct PluginDeleter;
-// Necessary to use unique_ptr with Plugin
-using PluginPtr = std::unique_ptr<Plugin, PluginDeleter>;
+#define R14_INJECTED 0xdeadbeef
 
 #if 0
 int getregs(syscall_context*, struct kvm_regs *);
 int getregs(void*, struct kvm_regs *);
 int setregs(syscall_context*, struct kvm_regs *);
 int setregs(void*, struct kvm_regs *);
-#endif
-
-//bool translate_gva(syscall_context *r, uint64_t gva, uint64_t* hva); // Used in common
-bool can_translate_gva(void*cpu, uint64_t gva);
 void set_regs_to_syscall(syscall_context* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig);
-
-#define IS_NORETURN_SC(x)(x == __NR_execve || \
-                          x == __NR_execveat || \
-                          x == __NR_exit || \
-                          x == __NR_exit_group || \
-                          x == __NR_rt_sigreturn)
-
-//#define PRINT_REG(REG) std::cout << "  " << #REG << ": " << std::hex << std::setw(16) << std::setfill('0') << regs.REG << std::endl;
-
-#ifdef WINDOWS
-#define SKIP_SYSNO 0x01c0 // NtTestAlert - Probably need a better one
-#else
-#define SKIP_SYSNO __NR_getpid
+#define PRINT_REG(REG) std::cout << "  " << #REG << ": " << std::hex << std::setw(16) << std::setfill('0') << regs.REG << std::endl;
 #endif
 
+#define SKIP_SYSNO __NR_getpid
+
+
+class Plugin;
+class syscall_context;
+struct PluginDeleter;
+// Necessary to use unique_ptr with Plugin
+using PluginPtr = std::unique_ptr<Plugin, PluginDeleter>;
 
 class Runtime {
 public:
@@ -64,8 +50,7 @@ private:
   using CreatePluginFunc = Plugin* (*)();
 
   struct LoadedPlugin {
-    ~LoadedPlugin(); // Add this line
-
+    ~LoadedPlugin();
     PluginPtr plugin;
     void* handle;
   };
@@ -76,11 +61,20 @@ private:
   //std::map<std::string, coopter_f*> coopters; // filename -> should_coopt function
 
   std::unordered_map<std::string, LoadedPlugin> loaded_plugins_;
-  //std::unordered_map<int, SyscallHandler> syscall_handlers_;
+  std::unordered_map<int, create_coopter_t> syscall_handlers_;
+  std::set<syscall_context*> coopted_procs_ = {}; // Procs that have been coopted
+
+  std::set<syscall_context*> double_return_parents_ = {};
+  std::set<syscall_context*> double_return_children_ = {};
+
   //std::vector<SyscallHandler> all_syscalls_handlers_;
+
+  using PluginInitFn = bool (*)(std::unordered_map<int, create_coopter_t>&);
+
 };
 
-// Define the custom deleter
+// Custom deleter. This is necessary to use unique_ptr with Plugin
+// since it's forward declared to avoid a circular dependency. Ugh C++
 struct PluginDeleter {
   void operator()(Plugin *plugin) const;
 };

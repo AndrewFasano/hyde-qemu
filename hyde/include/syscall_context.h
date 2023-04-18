@@ -1,6 +1,8 @@
 #pragma once
-
 #include <memory>
+#include "hsyscall.h"
+
+enum class RegIndex;
 
 class syscall_context_impl;
 
@@ -10,10 +12,16 @@ class syscall_context_impl;
 
 class syscall_context {
 public:
-    syscall_context(const syscall_context&) = delete;
-    syscall_context& operator=(const syscall_context&) = delete;
+    syscall_context(void* cpu);
+    //syscall_context(const syscall_context&) = delete;
+    syscall_context(const syscall_context& other);
+    //syscall_context& operator=(const syscall_context&) = delete;
 
-    int get_syscall_number() const;
+    hsyscall* get_orig_syscall() const;
+    uint64_t get_arg(RegIndex i) const;
+
+    uint64_t get_result() const;
+
     struct kvm_regs get_orig_regs() const;
     // Other public methods for plugins to access syscall_context information
 
@@ -62,20 +70,5 @@ struct syscall_context {
 
   //void setCoopter(coopter_t c) { coopter = c; }
   //coopter_t getCoopter() const { return coopter; }
-
-    // Function to get the argument value by index
-    inline uint64_t get_arg(RegIndex idx) {
-        switch (idx) {
-            case RegIndex::CALLNO:
-            case RegIndex::RET: return orig_regs.rax;
-            case RegIndex::ARG0: return orig_regs.rdi;
-            case RegIndex::ARG1: return orig_regs.rsi;
-            case RegIndex::ARG2: return orig_regs.rdx;
-            case RegIndex::ARG3: return orig_regs.r10;
-            case RegIndex::ARG4: return orig_regs.r8;
-            case RegIndex::ARG5: return orig_regs.r9;
-            default: throw std::runtime_error("Invalid register index");
-        }
-    }
 };
 #endif

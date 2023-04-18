@@ -1,12 +1,13 @@
 #pragma once
 
 #include <coroutine>
-#include "hyde/include/hsyscall.h"
-
-using ExitStatus = int;
+#include <functional>
+#include "hsyscall.h"
+#include "syscall_context.h"
 
 // HydeCoro is our tempalted coroutine we'll use for
 // SyscallCoroutines and SyscCoroHelpers
+enum class ExitStatus;
 
 template <typename T, typename R>
 struct HydeCoro {
@@ -51,5 +52,5 @@ using SyscCoroHelper = HydeCoro<hsyscall, int>;
 // coopter_t is a coroutine handle to SyscallCoroutine coroutines
 using coopter_t = std::coroutine_handle<SyscallCoroutine::promise_type>;
 
-// Don't have syscall context, yet
-//using create_coopt_t = SyscallCoroutine(*)(syscall_context*);
+// Pointer to a function that, when called, initializes a SyscallCoroutine?
+using create_coopter_t = std::function<SyscallCoroutine(syscall_context*)>;

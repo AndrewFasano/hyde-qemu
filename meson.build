@@ -289,6 +289,7 @@ endif
 add_project_arguments('-iquote', '.',
                       '-iquote', meson.current_source_dir(),
                       '-iquote', meson.current_source_dir() / 'include',
+                      '-iquote', meson.current_source_dir() / 'hyde/include',
                       language: ['c', 'cpp', 'objc'])
 
 if host_machine.system() == 'darwin'

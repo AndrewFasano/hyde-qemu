@@ -91,6 +91,9 @@ bool translate_gva(void* cpu, uint64_t gva, uint64_t* hva) {
     return true;
 }
 
+bool gpa_to_hva(void* cpu, uint64_t gpa, uint64_t* hva) {
+    return kvm_host_addr_from_physical_memory(gpa, (uint64_t*)hva) == 1;
+}
 bool get_regs(void*cpu, kvm_regs* regs) {
     return kvm_vcpu_ioctl(cpu, KVM_GET_REGS, regs) == 0;
 }

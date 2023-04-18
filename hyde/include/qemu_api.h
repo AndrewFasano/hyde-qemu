@@ -24,8 +24,9 @@ extern "C" {
     void  on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15);
 
     // Outgoing API: HyDE requests something from QEMU
-    bool translate_gva(void* cpu, uint64_t gva, uint64_t* hva);
+    bool translate_gva(void* cpu, uint64_t gva, uint64_t* gpa);
     bool can_translate_gva(void* cpu, uint64_t gva);
+    bool gpa_to_hva(void* cpu, uint64_t gpa, uint64_t* hva);
     bool get_regs(void* cpu, struct kvm_regs *outregs);
     bool set_regs(void* cpu, struct kvm_regs *inregs);
 

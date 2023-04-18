@@ -34,4 +34,11 @@ hsyscall* syscall_context::get_orig_syscall() const {
   return pImpl->get_orig_syscall();
 }
 
+bool syscall_context::translate_gva(uint64_t gva, uint64_t* gpa) {
+    return pImpl->translate_gva(gva, gpa);
+}
+bool syscall_context::gpa_to_hva(uint64_t gpa, uint64_t* hva) {
+    return pImpl->gpa_to_hva(gpa, hva);
+}
+
 // Implement other public interface methods

@@ -31,7 +31,8 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
   coopter_(nullptr),
   has_custom_retval_(false),
   has_custom_return_(false),
-  child_(false)
+  child_(false),
+  cpu_(cpu)
 {
   // At initialization, we read original registers
   assert(set_orig_regs(cpu));
@@ -84,4 +85,9 @@ bool syscall_context_impl::set_orig_regs(void* cpu) {
     return get_regs(cpu, &orig_regs_);
 }
 
-// Implement other internal methods
+bool syscall_context_impl::translate_gva(uint64_t gva, uint64_t* gpa) {
+    return ::translate_gva(cpu_, gva, gpa);
+}
+bool syscall_context_impl::gpa_to_hva(uint64_t gpa, uint64_t *hva) {
+    return ::gpa_to_hva(cpu_, gpa, hva);
+}

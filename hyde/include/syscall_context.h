@@ -22,6 +22,9 @@ public:
 
     uint64_t get_result() const;
 
+    bool translate_gva(uint64_t gva, uint64_t* gpa);
+    bool gpa_to_hva(uint64_t gpa, uint64_t *hva);
+
     struct kvm_regs get_orig_regs() const;
     // Other public methods for plugins to access syscall_context information
 

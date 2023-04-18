@@ -91,7 +91,12 @@ public:
       return custom_return_;
   }
 
-  kvm_regs get_orig_regs() { return orig_regs_; }
+  kvm_regs get_orig_regs() {
+    return orig_regs_;
+  }
+
+  bool translate_gva(uint64_t gva, uint64_t* gpa);
+  bool gpa_to_hva(uint64_t gpa, uint64_t* hva);
 
 private:
   syscall_context *syscall_context_;
@@ -115,12 +120,10 @@ private:
   bool child_; // True if this is a child process after a fork/clone
   //uint64_t last_sc_retval; // Return value to be set after simulating a system call
 
+  void* cpu_; // Opaque pointer we use internally
+
 #if 0
   std::string name; // Name (full path) of the hyde program
-
-  void* cpu; // Opaque pointer we use internally
-
   uint64_t asid;
-
 #endif
 };

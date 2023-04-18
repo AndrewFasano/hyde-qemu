@@ -45,7 +45,6 @@ struct HydeCoro {
 // The syscCoro type is a coroutine that yields hsyscall objects and returns an exit Status
 using SyscallCoroutine = HydeCoro<hsyscall, ExitStatus>;
 
-
 // Yields hsyscalls, returns an int - for helper functions
 using SyscCoroHelper = HydeCoro<hsyscall, int>;
 

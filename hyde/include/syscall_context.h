@@ -1,6 +1,7 @@
 #pragma once
 #include <memory>
 #include "hsyscall.h"
+#include "syscall_coroutine.h"
 
 enum class RegIndex;
 
@@ -14,13 +15,15 @@ class syscall_context {
 public:
     syscall_context(void* cpu);
     //syscall_context(const syscall_context&) = delete;
-    syscall_context(const syscall_context& other);
+    //syscall_context(const syscall_context& other);
     //syscall_context& operator=(const syscall_context&) = delete;
+    syscall_context(const syscall_context& other, void* cpu);
 
     hsyscall* get_orig_syscall() const;
     uint64_t get_arg(RegIndex i) const;
 
     uint64_t get_result() const;
+    void set_child_coopter(create_coopter_t f) const;
 
     bool translate_gva(uint64_t gva, uint64_t* gpa);
     bool gpa_to_hva(uint64_t gpa, uint64_t *hva);

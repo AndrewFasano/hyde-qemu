@@ -95,9 +95,15 @@ bool gpa_to_hva(void* cpu, uint64_t gpa, uint64_t* hva) {
     return kvm_host_addr_from_physical_memory(gpa, (uint64_t*)hva) == 1;
 }
 bool get_regs(void*cpu, kvm_regs* regs) {
-    return kvm_vcpu_ioctl(cpu, KVM_GET_REGS, regs) == 0;
+    int rv = kvm_vcpu_ioctl(cpu, KVM_GET_REGS, regs);
+    if (rv != 0) printf("ERROR: %d\n", rv);
+    return rv == 0;
 }
 
 bool set_regs(void*cpu, kvm_regs* regs) {
-    return kvm_vcpu_ioctl(cpu, KVM_SET_REGS, regs) == 0;
+    int rv = kvm_vcpu_ioctl(cpu, KVM_SET_REGS, regs);
+    if (rv != 0) {
+        printf("ERROR: %d\n", rv);
+    }
+    return rv == 0;
 }

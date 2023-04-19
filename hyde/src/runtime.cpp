@@ -32,13 +32,20 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     // and pointer to coopter state in r15
     target_details = (syscall_context*)r15;
   } else {
+
     auto it = syscall_handlers_.find(callno);
-    if ((it == syscall_handlers_.end())) {
-      // No existing coopter, no created co-opter - nothing to do
+    create_coopter_t creator;
+    if ((it != syscall_handlers_.end())) {
+      // First choice: a syscall-specific handler
+      creator = it->second;
+    } else if (catch_all_handler_ != nullptr) {
+      // Second choice: a catch-all handler
+      creator = catch_all_handler_;
+    } else {
+      // No handler for this syscall
       return;
     }
 
-    create_coopter_t creator = it->second;
     first = true;
     target_details = new syscall_context(cpu);
 
@@ -93,26 +100,23 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
   }
 
 
-  // Special handling for syscalls that return twice (in two processes)
-  // All these return 0 in parent, >0 in child, or <0 on error
-  if (sysc.callno == __NR_clone || \
-      sysc.callno == __NR_fork || \
-      sysc.callno == __NR_vfork) {
-    double_return_parents_.insert(target_details);
-    double_return_children_.insert(target_details);
-  }
 
   if (!target_details->pImpl->set_syscall(cpu, sysc)) {
     // It's a noreturn syscall, we can't catch it later so clean up now
     coopted_procs_.erase(target_details);
     delete target_details;
   }
-  //printf("Syscall\n");
+  else if (sysc.callno == __NR_clone || sysc.callno == __NR_fork || \
+           sysc.callno == __NR_vfork) {
+    // Special handling for syscalls that return twice (in two processes)
+    // All these return 0 in parent, >0 in child, or <0 on error
+
+    double_return_parents_.insert(target_details);
+    double_return_children_.insert(target_details);
+  }
 }
 
 void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15) {
-  // Handle the syscall return event (implementation not provided in the example)
-
   // Should be impossible - VMM only triggers on sysret if we injected
   assert(r14 == R14_INJECTED && "VMM incorrectly triggered on_sysret");
 
@@ -120,41 +124,55 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
 
   bool has_parent = double_return_parents_.count(target_details);
   bool has_child = double_return_children_.count(target_details);
-    if (has_parent) {
-    // Parent gets negative error or child PID
+
+  // If this return could've split into two processes, we need
+  // to find the child and launch a new, user-specified coopter for it
+  if (has_parent) {
+    // This syscall result could have a parent
     if (retval != 0) {
-      // This is the parent
+      // If retval != 0, it's the parent (retval is child pid or negative error)
       double_return_parents_.erase(target_details);
       if ((long signed int)retval < 0) {
         // ...and the parent failed - don't wait for the child
         double_return_children_.erase(target_details);
-      } else {
-        // Parent was successful and returns first
-        if (has_child) {
-          // Duplicate details in parent so child has its own
-          target_details = new syscall_context(target_details);
-          //memcpy(details, &r15, sizeof(syscall_context));
-        }
+      }else {
+        printf("In parent at %lx\n", pc);
       }
     }
   }
-
-  if (has_child) {
+  if (has_child && retval == 0) {
     // Child gets return value of 0
-    if (retval == 0) {
-      double_return_children_.erase(target_details);
-      target_details->pImpl->set_child();
-      
-      if (has_parent) {
-        // Child returns first - duplicate details
-        // so parent has its own
-        target_details = new syscall_context(target_details);
-        //memcpy(details, &r15, sizeof(syscall_context));
+    double_return_children_.erase(target_details);
+
+    // Need to launch new coopter for the child. Pulls from
+    // target_details->pImpl->child_coopter_;
+
+    if (target_details->pImpl->has_child_coopter()) {
+      printf("Launching child coopter from %lx\n", pc);
+      target_details = new syscall_context(*target_details, cpu);
+    } else {
+      printf("Restoring child to un-coopted at %lx\n", pc);
+      // No child coopter specified. We need to restore arguments
+      // that we clobbered, but other than that we just move on?
+
+      // Get registers now. RAX has fork retval (0)
+      // Restore r14, r15 from original and then bail
+    struct kvm_regs regs_on_ret2;
+      assert(get_regs(cpu, &regs_on_ret2));
+
+      regs_on_ret2.r14 = target_details->pImpl->get_orig_regs().r14;
+      regs_on_ret2.r15 = target_details->pImpl->get_orig_regs().r15;
+
+      if (regs_on_ret2.r14 == R14_INJECTED) {
+        // This child inherited parent registers, so we need to unclobber
+        //  R14/R15
+        assert(set_regs(cpu, &regs_on_ret2));
       }
+      return;
     }
   }
 
-if (target_details->pImpl->has_custom_retval()) [[unlikely]] {
+  if (target_details->pImpl->has_custom_retval()) [[unlikely]] {
     //hyde_printf("Did nop (really %lu) with rv=%lx.", details->orig_syscall->callno, retval);
     ;
   } else {
@@ -287,7 +305,18 @@ bool Runtime::load_hyde_prog(void* cpu, std::string path) {
   }
 
   // Init plugin with our map (it can update directly). Returns false on err
-  return init_plugin(syscall_handlers_);
+  create_coopter_t new_catchall = nullptr;
+  bool rv = init_plugin(syscall_handlers_, new_catchall);
+
+  if (rv && new_catchall != nullptr) {
+    if (catch_all_handler_ != nullptr) {
+      std::cerr << "ERROR: Multiple catchall coopters not supported" << std::endl;
+      return false;
+    }
+    catch_all_handler_ = new_catchall;
+  }
+
+  return rv;
 }
 
 bool Runtime::unload_all(void* cpu) {

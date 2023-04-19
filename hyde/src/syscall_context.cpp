@@ -6,16 +6,12 @@
 //    : pImpl(std::make_unique<syscall_context_impl>(nullptr)) {
 //}
 
-// cpu arg (i.e., something created by runtime)
 syscall_context::syscall_context(void* cpu) : pImpl(std::make_unique<syscall_context_impl>(cpu, this)) {}
 
-// No arg, no cpu (i.e., something created by a plugin)
-syscall_context::syscall_context() : pImpl(std::make_unique<syscall_context_impl>(nullptr, this)) {}
-
-// Copy constructor
-syscall_context::syscall_context(const syscall_context& other) {
-      pImpl = std::make_unique<syscall_context_impl>(*other.pImpl);
+syscall_context::syscall_context(const syscall_context& other, void* cpu) {
+      pImpl = std::make_unique<syscall_context_impl>(*other.pImpl, cpu, this);
 }
+
 
 //syscall_context::syscall_context() : pImpl(std::make_unique<syscall_context_impl>(*this)) {}
 
@@ -24,6 +20,10 @@ syscall_context::~syscall_context() = default;
 
 uint64_t syscall_context::get_arg(RegIndex i) const {
   return pImpl->get_arg(i);
+}
+
+void syscall_context::set_child_coopter(create_coopter_t f) const {
+  return pImpl->set_child_coopter(f);
 }
 
 uint64_t syscall_context::get_result() const {

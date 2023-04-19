@@ -3,11 +3,12 @@
 #include <coroutine>
 #include <functional>
 #include "hsyscall.h"
-#include "syscall_context.h"
 
 // HydeCoro is our tempalted coroutine we'll use for
 // SyscallCoroutines and SyscCoroHelpers
 enum class ExitStatus;
+
+class syscall_context;
 
 template <typename T, typename R>
 struct HydeCoro {

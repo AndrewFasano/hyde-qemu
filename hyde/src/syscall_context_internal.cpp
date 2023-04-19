@@ -1,4 +1,5 @@
 #include "hyde/src/syscall_context_internal.h"
+#include "syscall_coroutine.h"
 #include "qemu_api.h"
 #include <linux/kvm.h>
 #include <cassert>
@@ -31,11 +32,15 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
   coopter_(nullptr),
   has_custom_retval_(false),
   has_custom_return_(false),
-  child_(false),
   cpu_(cpu)
 {
   // At initialization, we read original registers
-  assert(set_orig_regs(cpu));
+  assert(cpu != nullptr);
+
+  if (!set_orig_regs(cpu)) {
+    printf("Failed to get orig registers with cpu at %p\n", cpu);
+    assert(0);
+  }
 
   // Parse registers to get orig syscall info
   // Yep it's duplicative!
@@ -47,9 +52,31 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
   orig_syscall_->set_args(6, args);
 }
 
+// Copy an existing syscall_ctx into a new one - e.g., after a fork
+syscall_context_impl::syscall_context_impl(const syscall_context_impl& other, void* cpu, syscall_context* ctx) :
+  syscall_context_(ctx),
+  orig_syscall_(new hsyscall(*other.orig_syscall_)),
+  coopter_(nullptr),
+  has_custom_retval_(other.has_custom_retval_),
+  custom_retval_(other.custom_retval_),
+  has_custom_return_(other.has_custom_return_),
+  custom_return_(other.custom_return_),
+  cpu_(cpu)
+{
+  // XXX can't duplicate coopter: instead we launch child coopter
+  assert(child_coopter_ != nullptr);
+  coopter_ = (child_coopter_)(syscall_context_).h_;
+  child_coopter_ = nullptr;
+}
+
+void syscall_context_impl::set_child_coopter(create_coopter_t f) {
+  child_coopter_ = f;
+}
+
+
 syscall_context_impl::~syscall_context_impl() {
   delete orig_syscall_;
-  coopter_.destroy();
+  if (coopter_ != nullptr) coopter_.destroy();
 }
 
 uint64_t syscall_context_impl::get_arg(RegIndex i) const {

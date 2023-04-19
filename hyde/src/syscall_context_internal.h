@@ -1,26 +1,17 @@
 #pragma once
 
 //#include "hyde/include/syscall_context.h"
-#include "hyde/include/plugin_common.h"
+#include "plugin_common.h"
+#include "syscall_coroutine.h"
 #include <linux/kvm.h>
 #include <cassert>
 
 class syscall_context_impl {
 public:
   syscall_context_impl(void* cpu, syscall_context *ctx);
-  syscall_context_impl(const syscall_context_impl& other) {
-    syscall_context_ = other.syscall_context_;
-    orig_regs_ = other.orig_regs_;
-    orig_syscall_ = other.orig_syscall_;
-    coopter_ = other.coopter_;
-    has_custom_retval_ = other.has_custom_retval_;
-    custom_retval_ = other.custom_retval_;
-    last_sc_retval_ = other.last_sc_retval_;
-    has_custom_return_ = other.has_custom_return_;
-    custom_return_ = other.custom_return_;
-    child_ = other.child_;
-  }
+  syscall_context_impl(const syscall_context_impl& other, void* cpu, syscall_context *ctx);
   ~syscall_context_impl();
+
 
   uint64_t get_arg(RegIndex i) const;
 
@@ -28,13 +19,25 @@ public:
     coopter_ = (f)(syscall_context_).h_;
   }
 
+  #if 0
   void set_child() {
+    parent_ = false;
     child_ = true;
   }
 
   bool is_child() {
     return child_;
   }
+
+  void set_parent() {
+    child_ = false;
+    parent_ = true;
+  }
+
+  bool is_parent() {
+    return parent_;
+  }
+  #endif
 
   void advance_coopter() {
     assert(coopter_ != nullptr);
@@ -98,6 +101,16 @@ public:
   bool translate_gva(uint64_t gva, uint64_t* gpa);
   bool gpa_to_hva(uint64_t gpa, uint64_t* hva);
 
+  void* get_cpu() {
+    return cpu_;
+  }
+
+  void set_child_coopter(create_coopter_t f);
+
+  bool has_child_coopter() {
+    return child_coopter_ != nullptr;
+  }
+
 private:
   syscall_context *syscall_context_;
 
@@ -117,7 +130,10 @@ private:
   bool has_custom_return_;
   uint64_t custom_return_;
 
-  bool child_; // True if this is a child process after a fork/clone
+  create_coopter_t child_coopter_;
+
+  //bool child_; // True if this is a child process after a fork/clone
+  //bool parent_; // True if this is a parent process after a fork/clone
   //uint64_t last_sc_retval; // Return value to be set after simulating a system call
 
   void* cpu_; // Opaque pointer we use internally

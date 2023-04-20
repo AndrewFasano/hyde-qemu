@@ -32,26 +32,37 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     // and pointer to coopter state in r15
     target_details = (syscall_context*)r15;
   } else {
+    // Given the callno, check if it's in our map or if we have a catchall
+    if (syscall_handlers_.find(-1) != syscall_handlers_.end()) {
+      // We have a catchall, pretend callno is -1 so we use it
+      callno = -1;
+    }
 
-    auto it = syscall_handlers_.find(callno);
-    create_coopter_t creator;
-    if ((it != syscall_handlers_.end())) {
-      // First choice: a syscall-specific handler
-      creator = it->second;
-    } else if (catch_all_handler_ != nullptr) {
-      // Second choice: a catch-all handler
-      creator = catch_all_handler_;
-    } else {
-      // No handler for this syscall
+    if (syscall_handlers_.find(callno) == syscall_handlers_.end()) {
+      // No syscall handler for this
       return;
+    }
+
+    // Get & store original registers before we run the coopter's first iteration
+    // XXX: Copy constructor here is important, don't just use directly
+    auto creator = syscall_handlers_[callno];
+
+    // Look through coopters_map and find the key that has this callno
+    std::string name;
+    for (auto it = coopters_map_.begin(); it != coopters_map_.end(); it++) {
+      // does this hyde program's coopted syscall vector contain callno?
+      if (std::find(it->second.begin(), it->second.end(), callno) != it->second.end()) {
+        name = it->first;
+        break;
+      }
     }
 
     first = true;
     target_details = new syscall_context(cpu);
 
-    coopted_procs_.insert(target_details);
-
     target_details->pImpl->set_coopter(creator);
+    target_details->pImpl->set_name(name);
+    coopted_procs_.insert(target_details);
   }
 
   hsyscall sysc;
@@ -304,19 +315,34 @@ bool Runtime::load_hyde_prog(void* cpu, std::string path) {
       return 1;
   }
 
-  // Init plugin with our map (it can update directly). Returns false on err
-  create_coopter_t new_catchall = nullptr;
-  bool rv = init_plugin(syscall_handlers_, new_catchall);
+  std::unordered_map<int, create_coopter_t> handlers;
+  bool rv = init_plugin(handlers);
 
-  if (rv && new_catchall != nullptr) {
-    if (catch_all_handler_ != nullptr) {
-      std::cerr << "ERROR: Multiple catchall coopters not supported" << std::endl;
+  // Plugin returned false (failure), don't register anything
+  if (!rv) return false;
+
+  // Update our internal map of handlers, ensuring no duplicates
+  // also track hyde program name -> hooked_scs so we can unload later
+  std::vector<int> hooked_scs;
+  for (auto it = handlers.begin(); it != handlers.end(); ++it) {
+    int key = it->first;
+    create_coopter_t handler = it->second;
+
+    // If we already have a handler for this key, error
+    if (syscall_handlers_.count(key)) {
+      std::cerr << "ERROR: Two HyDE programs request to coopt syscall " << key << std::endl;
       return false;
     }
-    catch_all_handler_ = new_catchall;
-  }
 
-  return rv;
+    // Otherwise, store the handler and that this hyde program uses it
+    syscall_handlers_[key] = handler;
+    hooked_scs.push_back(key);
+
+    std::cout << "HyDE program " << path << " will coopt SYS_" << key  << std::endl;
+  }
+  coopters_map_[path] = hooked_scs;
+
+  return true;
 }
 
 bool Runtime::unload_all(void* cpu) {

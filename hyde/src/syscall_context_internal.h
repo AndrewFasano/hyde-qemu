@@ -19,6 +19,10 @@ public:
     coopter_ = (f)(syscall_context_).h_;
   }
 
+  void set_name(std::string name) {
+    name_ = name;
+  }
+
   #if 0
   void set_child() {
     parent_ = false;
@@ -137,9 +141,9 @@ private:
   //uint64_t last_sc_retval; // Return value to be set after simulating a system call
 
   void* cpu_; // Opaque pointer we use internally
+  std::string name_; // Name (full path) of the hyde program
 
 #if 0
-  std::string name; // Name (full path) of the hyde program
   uint64_t asid;
 #endif
 };

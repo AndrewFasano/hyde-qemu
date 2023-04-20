@@ -62,7 +62,9 @@ private:
 
   // Plugins populate these in their init methods
   std::unordered_map<int, create_coopter_t> syscall_handlers_;
-  create_coopter_t catch_all_handler_ = nullptr;
+
+  std::unordered_map<std::string, std::vector<int>> coopters_map_; // filename -> hooked syscalls
+
 
   std::unordered_map<std::string, LoadedPlugin> loaded_plugins_;
   std::set<syscall_context*> coopted_procs_ = {}; // Procs that have been coopted
@@ -72,7 +74,7 @@ private:
 
   //std::vector<SyscallHandler> all_syscalls_handlers_;
 
-  using PluginInitFn = bool (*)(std::unordered_map<int, create_coopter_t>&, create_coopter_t&);
+  using PluginInitFn = bool (*)(std::unordered_map<int, create_coopter_t>&);
 };
 
 // Custom deleter. This is necessary to use unique_ptr with Plugin

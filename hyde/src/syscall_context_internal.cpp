@@ -20,14 +20,22 @@
 // Define a macro for setting a specific register value in kvm_regs
 #define __set_arg(regs, idx, val) REG_ACCESS(regs, idx) = (val)
 
+
+
 #define IS_NORETURN_SC(x)(x == __NR_execve || \
                           x == __NR_execveat || \
                           x == __NR_exit || \
                           x == __NR_exit_group || \
                           x == __NR_rt_sigreturn)
 
+#define IS_CLONE_SC(x)(x == __NR_clone || x == __NR_clone3)
+#define IS_FORK_SC(x)(x == __NR_fork || x == __NR_vfork)
+
+
 syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
   //last_sc_retval(0),
+  magic_(0x12345678),
+  last_sc_(0),
   syscall_context_(ctx),
   coopter_(nullptr),
   has_custom_retval_(false),
@@ -54,6 +62,8 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
 
 // Copy an existing syscall_ctx into a new one - e.g., after a fork
 syscall_context_impl::syscall_context_impl(const syscall_context_impl& other, void* cpu, syscall_context* ctx) :
+  magic_(0x12345678),
+  last_sc_(0),
   syscall_context_(ctx),
   orig_syscall_(new hsyscall(*other.orig_syscall_)),
   coopter_(nullptr),
@@ -63,6 +73,7 @@ syscall_context_impl::syscall_context_impl(const syscall_context_impl& other, vo
   custom_return_(other.custom_return_),
   cpu_(cpu)
 {
+  assert(0 && "Unused?");
   // XXX can't duplicate coopter: instead we launch child coopter
   assert(child_coopter_ != nullptr);
   coopter_ = (child_coopter_)(syscall_context_).h_;
@@ -83,33 +94,53 @@ uint64_t syscall_context_impl::get_arg(RegIndex i) const {
   return __get_arg(orig_regs_, i);
 }
 
-bool syscall_context_impl::set_syscall(void* cpu, hsyscall sc) {
+bool syscall_context_impl::set_syscall(void* cpu, hsyscall sc, bool nomagic) {
+  // Returns true IFF we set the magic r14/r15 values
+  // and therefore need to catch on return and cleanup
+
   kvm_regs r = orig_regs_;
   __set_arg(r, RegIndex::CALLNO, sc.callno);
 
-  // TODO: we should support stack-based args too
+  // TODO: we should support stack-based args too, but might need to inject to page in stack
   for (size_t i = 0; i < sc.nargs; i++) {
     uint64_t value = sc.args[i].is_ptr ? sc.args[i].guest_ptr : sc.args[i].value;
     __set_arg(r, (RegIndex)i, value);
   }
 
-  // Set our magic values, unless it won't return (then we can't detect on return,
-  // and we can't mess things up by changing state)
-  if (!IS_NORETURN_SC(sc.callno)) [[likely]] {
+  bool set_magic = false;
+
+  // Unless it's a noreturn or a notrack, we should inject magic values
+  // XXX DEBUG ONLY - not injecting into forks?
+  if (!IS_NORETURN_SC(sc.callno) && !IS_CLONE_SC(sc.callno) && !IS_FORK_SC(sc.callno) && \
+    !nomagic /* XXX DEBUGGING*/
+    ) /*[[likely]]*/ {
+      // < 100 BROKE
+      // < 50 seems to work?
+      // < 57: hangs?
+
     r.r14 = R14_INJECTED;
     r.r15 = (uint64_t)syscall_context_;
+    set_magic = true;
   }
 
   assert(set_regs(cpu, &r));
 
-  // return false if it's noreturn
-  return !IS_NORETURN_SC(sc.callno);
+  //printf("Setting registers to:\n");
+  //pretty_print_regs(r);
+
+  // return true if we clobbered r14/r15
+  return set_magic;
 }
 
 bool syscall_context_impl::set_orig_regs(void* cpu) {
     // Use an IOCTL to read the registers from the guest CPU
     // and store in this context
-    return get_regs(cpu, &orig_regs_);
+    bool rv = get_regs(cpu, &orig_regs_);
+    if (!rv) return false;
+
+    assert(orig_regs_.r14 != R14_INJECTED); // We should never have our maigc value in the original regs - we'd be clobbering ourself and lose something
+
+    return rv;
 }
 
 bool syscall_context_impl::translate_gva(uint64_t gva, uint64_t* gpa) {

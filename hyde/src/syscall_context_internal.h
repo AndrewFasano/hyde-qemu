@@ -6,6 +6,16 @@
 #include <linux/kvm.h>
 #include <cassert>
 
+// Pretty print kvm_regs
+static inline void pretty_print_regs(kvm_regs regs) {
+  printf("\trax: %llx, rbx: %llx, rcx: %llx, rdx: %llx\n", regs.rax, regs.rbx, regs.rcx, regs.rdx);
+  printf("\trsi: %llx, rdi: %llx, rsp: %llx, rbp: %llx\n", regs.rsi, regs.rdi, regs.rsp, regs.rbp);
+  printf("\tr8: %llx, r9: %llx, r10: %llx, r11: %llx\n", regs.r8, regs.r9, regs.r10, regs.r11);
+  printf("\tr12: %llx, r13: %llx, r14: %llx, r15: %llx\n", regs.r12, regs.r13, regs.r14, regs.r15);
+  printf("\trip: %llx, rflags: %llx\n", regs.rip, regs.rflags);
+}
+
+
 class syscall_context_impl {
 public:
   syscall_context_impl(void* cpu, syscall_context *ctx);
@@ -21,6 +31,10 @@ public:
 
   void set_name(std::string name) {
     name_ = name;
+  }
+
+  std::string get_name() {
+    return name_;
   }
 
   #if 0
@@ -82,7 +96,7 @@ public:
     custom_retval_ = retval;
   }
 
-  bool set_syscall(void* cpu, hsyscall sc);
+  bool set_syscall(void* cpu, hsyscall sc, bool nomagic);
 
   bool has_custom_return() {
     return has_custom_return_;
@@ -115,6 +129,22 @@ public:
     return child_coopter_ != nullptr;
   }
 
+  void set_orig(uint64_t orig_rcx, uint64_t orig_r11) {
+    orig_rcx_ = orig_rcx;
+    orig_r11_ = orig_r11;
+  }
+
+  uint64_t get_orig_r11() {
+    return orig_r11_;
+  }
+
+  uint64_t get_orig_rcx() {
+    return orig_rcx_;
+  }
+
+  int magic_; // XXX DEBUGGING
+  int last_sc_; // XXX DEBUGGING
+
 private:
   syscall_context *syscall_context_;
 
@@ -142,6 +172,9 @@ private:
 
   void* cpu_; // Opaque pointer we use internally
   std::string name_; // Name (full path) of the hyde program
+
+  uint64_t orig_rcx_; // Next PC?
+  uint64_t orig_r11_; // Pre-syscall rflags
 
 #if 0
   uint64_t asid;

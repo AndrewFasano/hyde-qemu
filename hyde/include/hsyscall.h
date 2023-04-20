@@ -30,6 +30,7 @@ struct hsyscall_arg {
  * After an hsyscall is injected, retval will bet set to the return value of the syscall and has_retval will be set to true.
 */
 struct hsyscall {
+  bool consumed; // Did we inject it already - just for debugging
   uint64_t callno; // System call number
   unsigned int nargs; // Number of arguments
   hsyscall_arg args[6]; // Arguments for the syscall
@@ -39,12 +40,14 @@ struct hsyscall {
   bool has_retval;
 
   hsyscall() :
+
     callno(0),
     nargs(0),
     retval(0),
     has_retval(false) {}
 
   hsyscall(uint64_t callno) :
+    consumed(false),
     callno(callno),
     nargs(0),
     retval(0),

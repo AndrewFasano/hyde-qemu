@@ -15,10 +15,38 @@ static inline void pretty_print_regs(kvm_regs regs) {
   printf("\trip: %llx, rflags: %llx\n", regs.rip, regs.rflags);
 }
 
+// Given two kvm_regs print only fields that are different using a macro
+#define PRINT_DIFF(regs1, regs2, field) \
+  if (regs1.field != regs2.field) { \
+    printf("\t" #field ": %llx -> %llx\n", regs1.field, regs2.field); \
+  }
+
+// Now use the macro, for each field in the struct
+static inline void pretty_print_diff_regs(kvm_regs regs1, kvm_regs regs2) {
+  PRINT_DIFF(regs1, regs2, rax);
+  PRINT_DIFF(regs1, regs2, rbx);
+  PRINT_DIFF(regs1, regs2, rcx);
+  PRINT_DIFF(regs1, regs2, rdx);
+  PRINT_DIFF(regs1, regs2, rsi);
+  PRINT_DIFF(regs1, regs2, rdi);
+  PRINT_DIFF(regs1, regs2, rsp);
+  PRINT_DIFF(regs1, regs2, rbp);
+  PRINT_DIFF(regs1, regs2, r8);
+  PRINT_DIFF(regs1, regs2, r9);
+  PRINT_DIFF(regs1, regs2, r10);
+  PRINT_DIFF(regs1, regs2, r11);
+  PRINT_DIFF(regs1, regs2, r12);
+  PRINT_DIFF(regs1, regs2, r13);
+  PRINT_DIFF(regs1, regs2, r14);
+  PRINT_DIFF(regs1, regs2, r15);
+  PRINT_DIFF(regs1, regs2, rip);
+  PRINT_DIFF(regs1, regs2, rflags);
+}
+
 
 class syscall_context_impl {
 public:
-  syscall_context_impl(void* cpu, syscall_context *ctx);
+  syscall_context_impl(void* cpu, syscall_context *ctx, uint64_t orig_rcx, uint64_t orig_r11);
   syscall_context_impl(const syscall_context_impl& other, void* cpu, syscall_context *ctx);
   ~syscall_context_impl();
 
@@ -143,6 +171,7 @@ public:
   }
 
   int magic_; // XXX DEBUGGING
+  int ctr_; // XXX DEBUGGING
   int last_sc_; // XXX DEBUGGING
 
 private:
@@ -155,7 +184,7 @@ private:
   coopter_t coopter_; // The coroutine that has taken over the guest process
 
   // A user can specify a retval to return
-  bool has_custom_retval_;
+  bool has_custom_retval_; // XXX dropped support for this
   uint64_t custom_retval_;
 
   uint64_t last_sc_retval_;

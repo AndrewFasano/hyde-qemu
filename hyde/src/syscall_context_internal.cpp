@@ -32,9 +32,10 @@
 #define IS_FORK_SC(x)(x == __NR_fork || x == __NR_vfork)
 
 
-syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
+syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx, uint64_t orig_rcx, uint64_t orig_r11) :
   //last_sc_retval(0),
   magic_(0x12345678),
+  ctr_(0),
   last_sc_(0),
   syscall_context_(ctx),
   coopter_(nullptr),
@@ -50,6 +51,24 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
     assert(0);
   }
 
+  // We want orig_regs to store our pre-syscall registers. But when we capture this info, we've already run
+  // our em_syscall function in kvm and we've set r11 = rflags, rcx = pc+2, pc=lstar.
+  // In our orig_regs, we want to store the original values. Does it matter? Don't think so?
+
+  // PC is now in RCX
+  orig_regs_.rip = orig_regs_.rcx; // Next instruction after syscall (maybe not +2?)
+
+  // Rflags in r11
+  orig_regs_.rflags = (orig_regs_.r11 & 0x3c7fd7) & 0x2;
+
+  // And rcx, r11 are clobbered for good. Be explicit about it
+  orig_regs_.rcx = 0x41424344;
+  orig_regs_.r11 = 0x61626364;
+
+
+
+  // And let's also hold nto the original 
+
   // Parse registers to get orig syscall info
   // Yep it's duplicative!
   orig_syscall_ = new hsyscall(__get_arg(orig_regs_, RegIndex::CALLNO));
@@ -63,6 +82,7 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
 // Copy an existing syscall_ctx into a new one - e.g., after a fork
 syscall_context_impl::syscall_context_impl(const syscall_context_impl& other, void* cpu, syscall_context* ctx) :
   magic_(0x12345678),
+  ctr_(0),
   last_sc_(0),
   syscall_context_(ctx),
   orig_syscall_(new hsyscall(*other.orig_syscall_)),

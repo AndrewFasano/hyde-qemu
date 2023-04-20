@@ -34,12 +34,14 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     // and pointer to coopter state in r15
     target_details = (syscall_context*)r15;
 
-    assert(0 && "This should never happen");
-
     if (target_details->pImpl->magic_ != 0x12345678) {
       printf("Magic mismatch - (UAF?) Last run syscall in this coopter was %d\n", target_details->pImpl->last_sc_);
       assert(target_details->pImpl->magic_ == 0x12345678);
     }
+
+    target_details->pImpl->ctr_++;
+    printf("%p: resumed at %d\n", target_details, target_details->pImpl->ctr_);
+
   } else {
     // Given the callno, check if it's in our map or if we have a catchall
     if (syscall_handlers_.find(-1) != syscall_handlers_.end()) {
@@ -67,18 +69,21 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
       }
     }
 
-    target_details = new syscall_context(cpu);
+    target_details = new syscall_context(cpu, rcx, r11); // This will do a KVM get_regs, and store orig rcx/r11 which have been clobbered before here. Otherwise we'd undo the sysret instruction's cleanup
     target_details->pImpl->set_coopter(creator);
     target_details->pImpl->set_name(name);
-    target_details->pImpl->set_orig(rcx, r11); // Do we need these? Or do we just want to restore orig_regs.r11 -> rflags on restore
+
+    printf("%p: started at %d\n", target_details, target_details->pImpl->ctr_);
+    printf("Initial registers: pc=%lx, r11=%lx, r14=%lx, r15=%lx\n", pc, r11, r14, r15);
+    pretty_print_regs(target_details->pImpl->get_orig_regs());
 
 
     coopted_procs_.insert(target_details);
-    pre_inject = target_details->pImpl->get_orig_regs();
 
     //printf("Got arg R11 of %lx vs orig_regs R11 has %llx\n", r11, pre_inject.r11);
   }
 
+  pre_inject = target_details->pImpl->get_orig_regs();
 
   hsyscall sysc;
   auto promise = target_details->pImpl->get_coopter_promise();
@@ -99,7 +104,17 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
 
   target_details->pImpl->last_sc_ = sysc.callno;
 
+  #if 0
   bool nomagic = true; // XXX DEBUG: never set magic
+  if (sysc.callno == SYS_getpid) {
+    // We'll allow magic just for getpid
+    nomagic = false;
+  }
+  #else
+  bool nomagic = false;
+
+  if (sysc.callno > 50) nomagic=true;
+  #endif
 
   // Set the syscall to the the guest CPU and update our tracking state
   if (!target_details->pImpl->set_syscall(cpu, sysc, nomagic)) {
@@ -112,13 +127,9 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     // XXX hit this case for *everything* now!
     coopted_procs_.erase(target_details);
     delete target_details;
-
-  } else {
-    assert(0 && "Unreachable");
   }
-
 #if 0
-  } else if ( sysc.callno == __NR_fork || sysc.callno == __NR_vfork) {
+    else if ( sysc.callno == __NR_fork || sysc.callno == __NR_vfork) {
     assert(0 && "XXX Disabled this just for debugging??");
     // fork and vfork *do* return, but they return twice - we can handle this on return
     // All these return 0 in parent, >0 in child, or <0 on error.
@@ -134,10 +145,14 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
 
   // We never add magic values, just the original call + args - these should
   // be identical to the original registers!
-  if(!is_equal(pre_inject, post_inject)) {
+  if(nomagic && !is_equal(pre_inject, post_inject)) {
+    printf("Before injection registers were:\n");
     pretty_print_regs(pre_inject);
+
+    printf("\nAfter injection, registers were:\n");
     pretty_print_regs(post_inject);
-    assert(0 && "Registers changed after set_syscall");
+
+    assert(0 && "Registers changed after set_syscall despite nomagic");
   }
 }
 
@@ -221,24 +236,29 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
   }
 #endif
 
-  if (target_details->pImpl->has_custom_retval()) [[unlikely]] {
-    //hyde_printf("Did nop (really %lu) with rv=%lx.", details->orig_syscall->callno, retval);
-    ;
-  } else {
-    target_details->pImpl->set_last_rv(retval);
-    //hyde_printf("rv=%lx.", retval);
-  }
+  target_details->pImpl->set_last_rv(retval);
+  //hyde_printf("rv=%lx.", retval);
+
   // If we set has_retval, it's in a funky state - we need to advance it so it will finish, otherwise we'll
   // keep yielding the last (no-op) syscall over and over again
   //details->coopter(); // Advance - will have access to the just returned value
 
   target_details->pImpl->advance_coopter();
 
+  // Copy original regs so we can modify them as necessary
+  struct kvm_regs orig_regs = target_details->pImpl->get_orig_regs();
+
   struct kvm_regs new_regs = target_details->pImpl->get_orig_regs();
+
+  // XXX CRITICAL CHANGE????
+  //new_regs.rflags = new_regs.r11; // XXX: syscall clobbered r11 with rflags. It's gonna do it again, so we need to restore it first
 
   if (!target_details->pImpl->is_coopter_done()) {
     // We have more to do, re-execute the syscall instruction, which will hit on_syscall and then this fn again.
-    //printf("Take it back\n");
+    printf("Take it back\n");
+    if (new_regs.rip != pc) {
+      printf("New regs has PC %llx but pc is %lx - want these to match\n", new_regs.rip, pc);
+    }
     new_regs.rip = pc-2; // Take it back now, y'all
     new_regs.r14 = R14_INJECTED;
     new_regs.r15 = (uint64_t)target_details;
@@ -273,9 +293,12 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
 
   // If we have a custom return, use it, otherwise set PC.
   // We *do* need to explicitly set this to pc, otherwise rip is the LSTAR value, not the next userspace insn!
-  new_regs.rip = target_details->pImpl->has_custom_return() ? target_details->pImpl->get_custom_return() : pc;
+  //new_regs.rip = target_details->pImpl->has_custom_return() ? target_details->pImpl->get_custom_return() : pc;
+
+  assert(new_regs.rip == pc); // No jumps
 
   // Now update registers to get the correct PC and return value
+  pretty_print_diff_regs(orig_regs, new_regs);
   assert(set_regs(cpu, &new_regs));
 
   // Based on result, update state for the whole hyde program

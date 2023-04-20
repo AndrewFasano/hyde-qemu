@@ -6,7 +6,7 @@
 //    : pImpl(std::make_unique<syscall_context_impl>(nullptr)) {
 //}
 
-syscall_context::syscall_context(void* cpu) : pImpl(std::make_unique<syscall_context_impl>(cpu, this)) {}
+syscall_context::syscall_context(void* cpu, uint64_t orig_rcx, uint64_t orig_r11) : pImpl(std::make_unique<syscall_context_impl>(cpu, this, orig_rcx, orig_r11)) {}
 
 syscall_context::syscall_context(const syscall_context& other, void* cpu) {
       pImpl = std::make_unique<syscall_context_impl>(*other.pImpl, cpu, this);

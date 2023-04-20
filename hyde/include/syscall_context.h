@@ -13,7 +13,7 @@ class syscall_context_impl;
 
 class syscall_context {
 public:
-    syscall_context(void* cpu);
+    syscall_context(void* cpu, uint64_t orig_rcx, uint64_t orig_r11);
     //syscall_context(const syscall_context&) = delete;
     //syscall_context(const syscall_context& other);
     //syscall_context& operator=(const syscall_context&) = delete;

@@ -8,10 +8,13 @@
 
 struct data {
   struct kvm_regs orig_regs;
-  int ctr;
 };
 
 Runtime::LoadedPlugin::~LoadedPlugin() = default;
+
+
+// On syscall stick a host ptr in r15
+// On sysret use host ptr to cleanup and examine register delta
 
 void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint64_t r11, uint64_t r14, uint64_t r15) {
   data* target = nullptr;
@@ -19,62 +22,30 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
   //if (callno != SYS_listen) return; // Ignore anything but this
   if (callno > 10) return;
 
-  if (r14 == R14_INJECTED) {
-    // Just increment counter;
-    target = (data*)r15;
+  // Store original data on the heap
+  target = new data();
 
-  } else {
-    // Store original data on the heap
-    target = new data();
+  // Grab original registers (post em_syscall)
+  assert(get_regs(cpu, &target->orig_regs));
+  
+  // Undo some of em_sysret for our orig_regs values?
+  //printf("\tWe could change orig_regs.rflags from %llx to %lx\n", target->orig_regs.rflags, (r11 & 0x3c7fd7) | 2);
+  //target->orig_regs.rflags = (r11 & 0x3c7fd7) | 2;
 
-    target->ctr = 0;
-    // Grab original registers (post em_syscall)
-    assert(get_regs(cpu, &target->orig_regs));
-    // and store original r14, r15 values in there. Wait that's dumb, they haven't changed
-    //target->orig_regs.r14 = r14;
-    //target->orig_regs.r15 = r15;
-    
-    // Calculate original rflags (undoing some of em_syscall)
-    target->orig_regs.rflags = (target->orig_regs.r11 & 0x3c7fd7) | 2;
+  //printf("\tWe could change orig_regs.rip from %llx to %lx\n", target->orig_regs.rip, pc);
+  //target->orig_regs.rip = pc; // XXX kills the guest
 
-    target->orig_regs.rip = pc;
+  // Less dumb: store original r11 and rcx values while we have them
+  //target->orig_regs.r11 = r11;
+  //target->orig_regs.rcx = rcx;
 
-    // Less dumb: store original r11 and rcx values while we have them
-    target->orig_regs.r11 = r11;
-    target->orig_regs.rcx = rcx;
-
-  }
-
-  assert (target->ctr < 5);
-
-  if (target->ctr == 0) {
-    printf("Starting new coopter with target %p, original syscall %lld\n", target, target->orig_regs.rax);
-    pretty_print_regs(target->orig_regs);
-  } else if (target->ctr < 4) {
-    printf("Continue to coopt target %p, ctr=%d\n", target, target->ctr);
-  }else {
-    printf("Run original syscall target %p, ctr=%d\n", target, target->ctr);
-  }
-
-  // Take original registers, set r14/r15 to magic + target pointer
-  // and set rax to our new syscall
   kvm_regs new_regs = target->orig_regs;
-  assert(new_regs.r14 != R14_INJECTED); // Sanity check - it's a copy
 
   new_regs.r14 = R14_INJECTED;
   new_regs.r15 = (uint64_t)target;
 
-  if (target->ctr < 4) {
-    // And change syscall to getpid
-    new_regs.rax = __NR_getpid;
-  } else {
-    // Finally, run the original syscall
-    // In other words, Leave RAX alone
-    printf("\tLeaving RAX as %lld\n", target->orig_regs.rax);
-  }
-
+  //printf("Running syscall %lld with target %p\n", target->orig_regs.rax, target);
   assert(set_regs(cpu, &new_regs));
-  target->ctr++;
 }
 
 void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15) {
@@ -82,44 +53,22 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
   assert(r14 == R14_INJECTED && "VMM incorrectly triggered on_sysret");
   data* target = (data*)r15;
 
-  printf("Return of %p with ctr %d\n", target, target->ctr);
+  //printf("Sysret with target %p. Original callno was %lld\n", target, target->orig_regs.rax);
+  kvm_regs new_regs;
+  assert(get_regs(cpu, &new_regs));
 
-  if (target->ctr < 4) {
-    // We just returned from an injected syscall. We need to go back!
-    kvm_regs new_regs = target->orig_regs;
+  new_regs.r14 = target->orig_regs.r14;
+  new_regs.r15 = target->orig_regs.r15;
+  // Sanity checks:
+  //assert(new_regs.rip == pc);
+  //assert(new_regs.rflags == target->orig_regs.rflags);
 
-    new_regs.rip = pc-2; // Make target go back to syscall instruction again
+  //printf("After full SC sequence delta is:\n");
+  //pretty_print_diff_regs(target->orig_regs, new_regs);
+  printf("Syscall %lld returned %lld\n", target->orig_regs.rax, new_regs.rax);
 
-    // When we hit the syscall, we'll load the existing target
-    new_regs.r14 = R14_INJECTED;
-    new_regs.r15 = (uint64_t)target;
-
-    // Change CPU to use our new registers
-    assert(set_regs(cpu, &new_regs));
-
-  } else {
-    // All done coopting - restore r14/r15
-    printf("Done with %p\n", target);
-    kvm_regs new_regs;
-    assert(get_regs(cpu, &new_regs));
-
-    // How did registers change from before any SC to after our last injected SC?
-
-    printf("Deleting coopter with target %p. Original SC rv is %lld\n", target, new_regs.rax);
-    new_regs.r14 = target->orig_regs.r14;
-    new_regs.r15 = target->orig_regs.r15;
-    //new_regs.rip = pc; // These might be the same?
-    assert(new_regs.rip == pc);
-    //new_regs.rflags = target->orig_regs.rflags; // These should be the same?
-    assert(new_regs.rflags == target->orig_regs.rflags); // These should be the same?
-
-    printf("After full SC sequence delta is:\n");
-    pretty_print_diff_regs(target->orig_regs, new_regs);
-    // Expect: RAX was callno, now is retval
-
-    delete target;
-    assert(set_regs(cpu, &new_regs));
-  }
+  delete target;
+  assert(set_regs(cpu, &new_regs));
 }
 
 bool Runtime::load_hyde_prog(void* cpu, std::string path) {

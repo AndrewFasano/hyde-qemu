@@ -16,21 +16,23 @@
 FILE *fp = NULL;
 
 struct Data {
+  int magic;
   kvm_regs orig_regs;
   bool parent_ret_pending;
   bool child_call_pending;
   bool force_retval;
   uint64_t retval;
-  bool pending;
+  int pending;
+  uint64_t pending_pc;
   int ctr;
 
   // Initialize and orig_regs based on CPU
-  Data(void* cpu) : orig_regs(), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(false), ctr(0), refcount(1) {
+  Data(void* cpu) : magic(0x12345678), orig_regs(), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(-1), pending_pc(0), ctr(0), refcount(1) {
       assert(get_regs(cpu, &orig_regs));
   }
 
   // Create a new instance with the same orig_regs as the old
-  Data(const Data& other) : parent_ret_pending(false), child_call_pending(false), force_retval(false), retval(0), pending(false), ctr(0), refcount(1) {
+  Data(const Data& other) : magic(0x12345678), parent_ret_pending(false), child_call_pending(false), force_retval(false), retval(0), pending(-1), pending_pc(0), ctr(0), refcount(1) {
       std::memcpy(&orig_regs, &other.orig_regs, sizeof(kvm_regs));
   }
 
@@ -42,6 +44,8 @@ struct Data {
   void release() {
     refcount--;
     if (refcount == 0) {
+        magic = -1;
+        fprintf(fp, "Freeing %p\n", this);
         delete this;
     }
   }
@@ -71,17 +75,18 @@ struct Data {
   }
 
   void update_regs_for_original_syscall(kvm_regs& new_regs, uint64_t pc) {
+    //new_regs.rax = orig_regs.rax; // new_regs is based on orig_regs
     new_regs.rcx = pc;
   }
 
-  void set_magic(kvm_regs& new_regs) {
+  void prepare_to_run(void* cpu, kvm_regs& new_regs) {
+    // Set magic r14/r15, store callno in pending, bump ctr, and set regs
     new_regs.r14 = R14_INJECTED;
     new_regs.r15 = reinterpret_cast<uint64_t>(this);
-  }
-
-  void increment_ctr_and_set_pending() {
-    pending = true;
+    pending = (int)new_regs.rax; // Callno, won't overflow an int
+    pending_pc = new_regs.rcx;
     ctr++;
+    assert(set_regs(cpu, &new_regs));
   }
 
 private:
@@ -94,7 +99,7 @@ Runtime::LoadedPlugin::~LoadedPlugin() = default;
 // On syscall stick a host ptr in r15
 // On sysret use host ptr to cleanup and examine register delta
 
-void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint64_t r11, uint64_t r14, uint64_t r15) {
+void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint64_t r11, uint64_t r14, uint64_t r15, uint64_t cpu_id) {
   Data* target = nullptr;
 
   if (callno ==  SYS_rt_sigreturn) {
@@ -102,6 +107,18 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     // The kernel-saved regs should include our magic value if the signal was raised while in a tracked syscall
     // When this event happens, we can't reliably lookup our data struct, but if we had one it will reliably be
     // restored - so do nothing here.
+
+    // Sanity check - are we restoring to something after we saw a pending? That would be cool
+    // XXX By the time the signal handlers calls sigreturn I think it could've easily changed r14/r15
+#if 0
+  // Huh, this happens a lot
+  if (r14 == R14_INJECTED) {
+      target = (Data*)r15;
+      if (target->pending != -1) {
+        printf("Sigreturn going back to previously-pending syscall %d\n", target->pending);
+      }
+    }
+#endif
     return;
   }
 
@@ -116,9 +133,19 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     return;
   }
 
+#if 1
+  if (callno == SYS_fork || callno == SYS_vfork) {
+    // Testing - can we just ignore?
+    return;
+  }
+#endif
+
 
   if (r14 == R14_INJECTED_PARENT) {
     target = (Data*)r15;
+    assert(target->magic == 0x12345678);
+    //fprintf(fp, "Syscall %d with injected parent: %p\n", callno, target);
+
     //printf("SYSCALL aT %lx: Parent's forced syscall. child pid is %d, refcount is %d--\n", pc, callno, target->refcount);
 
     // Create a copy of target to use
@@ -129,24 +156,28 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     // We want to run getpid, return callno (child PID), and then resume at pc which is just
     // after this syscall
     target = new_target;
+    fprintf(fp, "Created new target for parent %p\n", target);
 
-    // Force getpid, return callno, go to next insn (PC)
-    target->update_regs_for_nop(pc, callno);
-
-  // Need to do a no-op and then return child pid which we currently have in uh callno?
+    // Force getpid, return child pc (callno), then continue
+    target->update_regs_for_nop(pc, (uint64_t)callno);
 
   } else if (r14 == R14_INJECTED) {
     // We injected a syscall, it returned, and now we're injecting again
     // For this minimal example, this means we ran getpid and now we're onto
     // the original syscall
     target = (Data*)r15;
+    assert(target->magic == 0x12345678);
+    //fprintf(fp, "Syscall %d after injection: %p\n", callno, target);
 
-    if (target->pending) {
-      // Psych, we're actually in a signal handler! Whoopsies
-      // Change r14 to junk so we ignor ethis. On sigreturn target will get real r14 again
+    if (target->pending != -1) {
+      // Psych, we're actually in a signal handler!
+      // Change r14 to junk so we ignore this. On sigreturn target will get our magic r14/r15 again
+
+      fprintf(fp, "Detected signal handler at %lx callno %d with pending %d changing R14 target is %p\n", pc, callno, target->pending, target);
       kvm_regs regs;
       assert(get_regs(cpu, &regs));
       regs.r14 = JUNK_R14;
+      regs.r15 = 0;
       assert(set_regs(cpu, &regs));
       return;
     }
@@ -154,17 +185,13 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     if (target->child_call_pending) {
       // Child is now running and it hits our forced syscall, start
       // with a no-op then return 0
-
       Data* new_target = new Data(*target);
-
       target->release();
-
       target = new_target;
+      fprintf(fp, "Created target %p for child\n", target);
+
       // Force getpid, return 0, go to next insn (PC)
-      target->orig_regs.rcx = pc; // Post-syscall insn
-      target->orig_regs.rax = SYS_getpid; // No-op - XXX we won't co-opt this one
-      target->force_retval = true; // Needs to ret 0 in child
-      target->retval = 0;
+      target->update_regs_for_nop(pc, 0);
     }
 
     assert(target->ctr < 2); // Ctr is 0 for our inject, then 1 for original
@@ -172,6 +199,8 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
   } else {
     // First time hitting a syscall, allocate our Data and grab orig regs
     target = new Data(cpu);
+    fprintf(fp, "Created new target %p\n", target);
+    //fprintf(fp, "Syscall %d just created: %p\n", callno, target);
   }
 
   kvm_regs new_regs = target->orig_regs;
@@ -184,6 +213,7 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
   } else if (target->ctr > 0) {
     // Second time - run original syscall. Or if it's a fork, handle it
     // Update PC to next insn
+    fprintf(fp, "Syscall running original %lld with target %p\n", new_regs.rax, target);
     target->update_regs_for_original_syscall(new_regs, pc);
 
     if (target->is_fork(callno)) {
@@ -191,18 +221,40 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     }
   }
 
-  target->set_magic(new_regs);
-  target->increment_ctr_and_set_pending();
-
-  assert(set_regs(cpu, &new_regs));
+  target->prepare_to_run(cpu, new_regs);
+  fprintf(fp, "CALL #%d cpu %ld, target %p set callno to %lld, pending=%d, pending_pc=%lx\n", target->ctr, cpu_id, target, new_regs.rax, target->pending, target->pending_pc);
 }
 
-void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15) {
+void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15, uint64_t cpu_id) {
 
   assert(r14 == R14_INJECTED && "VMM incorrectly triggered on_sysret");
 
   Data* target = (Data*)r15;
-  target->pending = false; // TODO: how to handle with parent/childs?
+  assert(target->magic == 0x12345678);
+
+  fprintf(fp, "RET #%d cpu %ld target %p pending=%d pending_pc=%lx, retval=%d pc=%lx\n", target->ctr, cpu_id, target, target->pending, target->pending_pc, retval, pc);
+
+  //assert(target->pending != -1);
+#if 0
+// Edge case with signal handling again? sysret runs twice without syscall
+  i (target->pending == -1) {
+    printf("Pending was -1 for target %p, pc=%lx\n", target, pc);
+    fflush(NULL);
+    assert(0);
+  }
+#endif
+  if (target->pending == -1) {
+    // Need to undo what we did on previous sysret since hti sis a dup
+    target->addRef();
+  }
+
+  if (pc != target->pending_pc) {
+    fprintf(fp, "sysret of %p expected at %lx but was at %lx\n", target, target->pending_pc, pc);
+    fflush(NULL);
+    assert(0);
+  }
+
+  target->pending = -1; // TODO: how to handle with parent/childs?
 
   //fprintf(fp, "Sysret with target %p. Original callno was %lld\n", target, target->orig_regs.rax);
 
@@ -211,7 +263,8 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
     kvm_regs new_regs;
     assert(get_regs(cpu, &new_regs));
 
-    int retval = (target->force_retval) ? target->retval : new_regs.rax;
+    //bool force_retval = target->force_retval;
+    uint64_t retval = (target->force_retval) ? target->retval : new_regs.rax;
 
     if (target->parent_ret_pending) {
       // We're about re-execute the syscall instruction in the parent, need to be side effect free
@@ -230,9 +283,10 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
       target->release();
     }
 
-    if (target->force_retval) {
-      new_regs.rax = retval;
-    }
+    //if (force_retval) {
+    //  new_regs.rax = retval;
+    //}
+    new_regs.rax = retval;
 
     assert(set_regs(cpu, &new_regs));
 

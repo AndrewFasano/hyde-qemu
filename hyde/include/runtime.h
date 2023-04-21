@@ -39,8 +39,8 @@ public:
   bool unload_hyde_prog(void* cpu, std::string path);
   bool unload_all(void* cpu);
 
-  void on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint64_t r11, uint64_t r14, uint64_t r15);
-  void  on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15);
+  void on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint64_t r11, uint64_t r14, uint64_t r15, uint64_t cpu_id);
+  void  on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15, uint64_t cpu_id);
 
 private:
   syscall_context* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned long fs, int callno, unsigned long asid, unsigned long pc);

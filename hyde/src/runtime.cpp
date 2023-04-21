@@ -12,6 +12,11 @@
 #define R14_INJECTED_PARENT 0x5ca1ab1e
 #define JUNK_R14 0xcafebabe
 
+#define SKIP_FORK
+
+
+static uint64_t global_ctr = 0;
+static uint64_t N = (uint64_t)-1;
 
 FILE *fp = NULL;
 
@@ -45,7 +50,7 @@ struct Data {
     refcount--;
     if (refcount == 0) {
         magic = -1;
-        fprintf(fp, "Freeing %p\n", this);
+        //fprintf(fp, "Freeing %p\n", this);
         delete this;
     }
   }
@@ -55,7 +60,7 @@ struct Data {
   }
 
   void handle_fork(kvm_regs& new_regs, uint64_t pc) {
-    new_regs.rcx = pc - 2;
+    new_regs.rcx = pc - 2; // Re-exec current syscall
     addRef();
     parent_ret_pending = true;
     child_call_pending = true;
@@ -63,7 +68,8 @@ struct Data {
 
   void update_regs_for_injected_syscall(kvm_regs& new_regs, uint64_t new_callno, uint64_t pc) {
     new_regs.rax = new_callno;
-    new_regs.rcx = pc - 2;
+    // TODO: args?
+    new_regs.rcx = pc - 2; // Re-exec current syscall
   }
 
   void update_regs_for_nop(uint64_t pc, uint64_t new_retval) {
@@ -133,7 +139,7 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     return;
   }
 
-#if 1
+#ifdef SKIP_FORK
   if (callno == SYS_fork || callno == SYS_vfork) {
     // Testing - can we just ignore?
     return;
@@ -156,7 +162,7 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     // We want to run getpid, return callno (child PID), and then resume at pc which is just
     // after this syscall
     target = new_target;
-    fprintf(fp, "Created new target for parent %p\n", target);
+    //fprintf(fp, "Created new target for parent %p\n", target);
 
     // Force getpid, return child pc (callno), then continue
     target->update_regs_for_nop(pc, (uint64_t)callno);
@@ -166,18 +172,18 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     // For this minimal example, this means we ran getpid and now we're onto
     // the original syscall
     target = (Data*)r15;
-    assert(target->magic == 0x12345678);
+    assert(target->magic == 0x12345678); // Checking for UAFs for debugging
     //fprintf(fp, "Syscall %d after injection: %p\n", callno, target);
 
     if (target->pending != -1) {
       // Psych, we're actually in a signal handler!
       // Change r14 to junk so we ignore this. On sigreturn target will get our magic r14/r15 again
 
-      fprintf(fp, "Detected signal handler at %lx callno %d with pending %d changing R14 target is %p\n", pc, callno, target->pending, target);
+      //fprintf(fp, "Detected signal handler at %lx callno %d with pending %d changing R14 target is %p\n", pc, callno, target->pending, target);
       kvm_regs regs;
       assert(get_regs(cpu, &regs));
       regs.r14 = JUNK_R14;
-      regs.r15 = 0;
+      regs.r15 = JUNK_R14;
       assert(set_regs(cpu, &regs));
       return;
     }
@@ -188,7 +194,7 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
       Data* new_target = new Data(*target);
       target->release();
       target = new_target;
-      fprintf(fp, "Created target %p for child\n", target);
+      //fprintf(fp, "Created target %p for child\n", target);
 
       // Force getpid, return 0, go to next insn (PC)
       target->update_regs_for_nop(pc, 0);
@@ -198,13 +204,18 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
 
   } else {
     // First time hitting a syscall, allocate our Data and grab orig regs
-    target = new Data(cpu);
-    fprintf(fp, "Created new target %p\n", target);
-    //fprintf(fp, "Syscall %d just created: %p\n", callno, target);
+
+    if (global_ctr++ % N == 0) [[unlikely]] {
+      target = new Data(cpu);
+      //fprintf(fp, "Created new target %p\n", target);
+      //fprintf(fp, "Syscall %d just created: %p\n", callno, target);
+    } else {
+      //target->ctr = 1; // Don't inject the rest of the time
+      return;
+    }
   }
 
   kvm_regs new_regs = target->orig_regs;
-
 
   if (target->ctr == 0) {
     // First time, inject getpid
@@ -213,7 +224,7 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
   } else if (target->ctr > 0) {
     // Second time - run original syscall. Or if it's a fork, handle it
     // Update PC to next insn
-    fprintf(fp, "Syscall running original %lld with target %p\n", new_regs.rax, target);
+    //fprintf(fp, "Syscall running original %lld with target %p\n", new_regs.rax, target);
     target->update_regs_for_original_syscall(new_regs, pc);
 
     if (target->is_fork(callno)) {
@@ -222,7 +233,7 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
   }
 
   target->prepare_to_run(cpu, new_regs);
-  fprintf(fp, "CALL #%d cpu %ld, target %p set callno to %lld, pending=%d, pending_pc=%lx\n", target->ctr, cpu_id, target, new_regs.rax, target->pending, target->pending_pc);
+  //fprintf(fp, "CALL #%d cpu %ld, target %p set callno to %lld, pending=%d, pending_pc=%lx\n", target->ctr, cpu_id, target, new_regs.rax, target->pending, target->pending_pc);
 }
 
 void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15, uint64_t cpu_id) {
@@ -232,7 +243,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
   Data* target = (Data*)r15;
   assert(target->magic == 0x12345678);
 
-  fprintf(fp, "RET #%d cpu %ld target %p pending=%d pending_pc=%lx, retval=%d pc=%lx\n", target->ctr, cpu_id, target, target->pending, target->pending_pc, retval, pc);
+  //fprintf(fp, "RET #%d cpu %ld target %p pending=%d pending_pc=%lx, retval=%d pc=%lx\n", target->ctr, cpu_id, target, target->pending, target->pending_pc, retval, pc);
 
   //assert(target->pending != -1);
 #if 0
@@ -249,7 +260,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
   }
 
   if (pc != target->pending_pc) {
-    fprintf(fp, "sysret of %p expected at %lx but was at %lx\n", target, target->pending_pc, pc);
+    //fprintf(fp, "sysret of %p expected at %lx but was at %lx\n", target, target->pending_pc, pc);
     fflush(NULL);
     assert(0);
   }
@@ -263,7 +274,6 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
     kvm_regs new_regs;
     assert(get_regs(cpu, &new_regs));
 
-    //bool force_retval = target->force_retval;
     uint64_t retval = (target->force_retval) ? target->retval : new_regs.rax;
 
     if (target->parent_ret_pending) {
@@ -282,12 +292,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
 
       target->release();
     }
-
-    //if (force_retval) {
-    //  new_regs.rax = retval;
-    //}
-    new_regs.rax = retval;
-
+    new_regs.rax = retval; // Only changes it if we had force_retval
     assert(set_regs(cpu, &new_regs));
 
   }
@@ -297,8 +302,11 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
 }
 
 bool Runtime::load_hyde_prog(void* cpu, std::string path) {
-  fp = fopen("/tmp/sc.txt","w");
-  return true;
+  //fp = fopen("/tmp/sc.txt","w");
+
+  // Get N from env and convert to int. On error abort
+  N = (uint64_t)(getenv("N") ? atoi(getenv("N")) : -1);
+  return N != (uint64_t)-1;
 }
 
 bool Runtime::unload_all(void* cpu) {
@@ -311,6 +319,6 @@ bool Runtime::unload_hyde_prog(void* cpu, std::string path) {
 
 // Implement the custom deleter
 void PluginDeleter::operator()(Plugin *plugin) const {
-  fclose(fp); // Uhh?
+  //fclose(fp); // Uhh?
   delete plugin;
 }

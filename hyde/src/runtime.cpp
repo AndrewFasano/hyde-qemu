@@ -16,17 +16,18 @@ struct data {
   bool force_retval;
   uint64_t retval;
   bool pending;
+  int ctr;
 
   // Manually set orig_regs, please?
-  data() : orig_regs(), refcount(1), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(false) {
+  data() : orig_regs(), refcount(1), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(false), ctr(0) {
   }
   // Create given a cpu - just run getregs
-  data(void* cpu) : orig_regs(), refcount(1), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(false) {
+  data(void* cpu) : orig_regs(), refcount(1), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(false), ctr(0) {
       assert(get_regs(cpu, &orig_regs));
   }
 
   // Create giving an existing data, copy it's regs
-  data(const data& other) : refcount(1), parent_ret_pending(false), child_call_pending(false), force_retval(false), retval(0), pending(false) {
+  data(const data& other) : refcount(1), parent_ret_pending(false), child_call_pending(false), force_retval(false), retval(0), pending(false), ctr(0) {
       std::memcpy(&orig_regs, &other.orig_regs, sizeof(kvm_regs));
   }
 };
@@ -63,8 +64,6 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     return;
   }
 
-
-  bool new_target = false;
 
   if (r14 == R14_INJECTED_PARENT) {
     target = (data*)r15;
@@ -114,52 +113,45 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
       target->retval = 0;
 
 
-    } else {
-#if 0
-    printf("Target is %p callno is %d, pc is %lx. CTR %d, refcount %d\n", target, callno, pc, target->ctr, target->refcount);
-
-      printf("Orig regs:\n");
-      pretty_print_regs(target->orig_regs);
-
-      printf("Versus curent registers:\n");
+    } else if (target->pending) {
+      // We issued a syscall and haven't seen a return yet - must be a signal handler issuing another syscall
       kvm_regs regs;
       assert(get_regs(cpu, &regs));
-      pretty_print_regs(regs);
+      regs.r14 = JUNK_R14;
+      assert(set_regs(cpu, &regs));
+      return;
 
-      assert(0 && "What - child hits syscall but not child_call_pending?\n");
-#endif
-      if (target->pending) {
-        kvm_regs regs;
-        assert(get_regs(cpu, &regs));
-        regs.r14 = JUNK_R14;
-        assert(set_regs(cpu, &regs));
-        return;
-      } else{
-        // This SC isn't pending? What's going on!?
-        assert(0 && "What");
-      }
+    } else {
+      assert(target->ctr < 2); // Ctr is 0 for our inject, then 1 for original
     }
   } else {
     // First time hitting a syscall, allocate our data and grab orig regs
     target = new data(cpu);
-    new_target = true;
   }
 
   kvm_regs new_regs = target->orig_regs;
-  if (new_target) assert(callno == new_regs.rax);
 
-  if (new_target && (callno == SYS_fork || callno == SYS_vfork)) {
-    // Guest is trying to do a fork, let's take over. Maybe impossible with !new_target
+  if (target->ctr == 0) {
+    new_regs.rax = SYS_getpid; // Injected syscall woop
+    new_regs.rcx = pc-2; // Rerun syscall on return
 
-    // Let's set RCX to pc so the child immediately executes the syscall instruction again.
-    // We'll see a return in the parent and then a syscall in the child.
-    // We'll need to check the magic R14/R15 values on subsequent syscalls to identify the child.
-    // When we do, we need to run a NO-OP in the child, restore R14/R15 on return, and cleanup allocations when refcount hits 0
+  } else if (target->ctr > 0) {
+    // Want to run the original syscall. If it returns 2x we have to special case it
+    // We have args in new_regs already from orig_regs
 
-    target->refcount++; 
-    new_regs.rcx = pc-2; // XXX shift backwards so both parent and child will hit the original syscall instruction. We'll special case both
-    target->parent_ret_pending = true;
-    target->child_call_pending = true;
+    if ((callno == SYS_fork || callno == SYS_vfork)) {
+      // Guest is trying to do a fork, let's take over. Maybe impossible with !new_target
+
+      // Let's set RCX to pc so the child immediately executes the syscall instruction again.
+      // We'll see a return in the parent and then a syscall in the child.
+      // We'll need to check the magic R14/R15 values on subsequent syscalls to identify the child.
+      // When we do, we need to run a NO-OP in the child, restore R14/R15 on return, and cleanup allocations when refcount hits 0
+
+      target->refcount++; 
+      new_regs.rcx = pc-2; // XXX shift backwards so both parent and child will hit the original syscall instruction. We'll special case both
+      target->parent_ret_pending = true;
+      target->child_call_pending = true;
+    }
   }
 
 
@@ -169,8 +161,8 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
   new_regs.r15 = (uint64_t)target;
 
   target->pending = true;
+  target->ctr++;
 
-  //fprintf(fp, "Running syscall %lld with target %p\n", target->orig_regs.rax, target);
   assert(set_regs(cpu, &new_regs));
 }
 
@@ -182,41 +174,42 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
   target->pending = false; // TODO: how to handle with parent/childs?
 
   //fprintf(fp, "Sysret with target %p. Original callno was %lld\n", target, target->orig_regs.rax);
-  kvm_regs new_regs;
-  assert(get_regs(cpu, &new_regs));
+  if (target->ctr > 1) {
+    // Final syscall (i.e., not the injected one)
+    kvm_regs new_regs;
+    assert(get_regs(cpu, &new_regs));
 
+    if (target->parent_ret_pending) {
+      // We're about re-execute the syscall instruction in the parent, need to be side effect free
+      // Set R14 to special (second) magic value.
+      // We'll change callno to getpid on the syscall and grab the PID then. We could alternatively do that here.
 
-  if (target->parent_ret_pending) {
-    // We're about re-execute the syscall instruction in the parent, need to be side effect free
-    // Set R14 to special (second) magic value.
-    // We'll change callno to getpid on the syscall and grab the PID then. We could alternatively do that here.
+      // We leave R15 alone, we'll need it on the imminent syscall in the parent!
+      new_regs.r14 = R14_INJECTED_PARENT;
+      //printf("SYSRET: first parent returns, going to re-exec no-op syscall (refcount %d: maintianing)\n", target->refcount);
 
-    // We leave R15 alone, we'll need it on the imminent syscall in the parent!
-    new_regs.r14 = R14_INJECTED_PARENT;
-    //printf("SYSRET: first parent returns, going to re-exec no-op syscall (refcount %d: maintianing)\n", target->refcount);
-
-  } else {
-    new_regs.r14 = target->orig_regs.r14;
-    new_regs.r15 = target->orig_regs.r15;
-  }
-
-  if (target->force_retval) {
-    // Need retval to be 0 in child or child pid in parent
-    new_regs.rax = target->retval;
-    //printf("\tSetting retval to %ld\n", target->retval);
-  }
-
-  fprintf(fp, "%p, syscall %lld, returns %lld\n", target, target->orig_regs.rax, new_regs.rax);
-  //fflush(fp);
-
-  if (!target->parent_ret_pending) {
-    target->refcount--;
-    if (target->refcount == 0) {
-      delete target;
+    } else {
+      new_regs.r14 = target->orig_regs.r14;
+      new_regs.r15 = target->orig_regs.r15;
     }
-  }
 
-  assert(set_regs(cpu, &new_regs));
+    if (target->force_retval) {
+      // Need retval to be 0 in child or child pid in parent
+      new_regs.rax = target->retval;
+      //printf("\tSetting retval to %ld\n", target->retval);
+    }
+
+    fprintf(fp, "%p, syscall %lld, returns %lld\n", target, target->orig_regs.rax, new_regs.rax);
+    //fflush(fp);
+
+    if (!target->parent_ret_pending) {
+      target->refcount--;
+      if (target->refcount == 0) {
+        delete target;
+      }
+    }
+    assert(set_regs(cpu, &new_regs));
+  }
 }
 
 bool Runtime::load_hyde_prog(void* cpu, std::string path) {

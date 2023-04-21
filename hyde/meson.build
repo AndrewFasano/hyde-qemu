@@ -1,5 +1,6 @@
+
 kvm_ss = ss.source_set()
-kvm_ss.add(files(
+kvm_ss.add([files(
   'include/plugin_common.h',
   'include/syscall_context.h',
   'include/runtime.h',
@@ -9,7 +10,7 @@ kvm_ss.add(files(
   'src/runtime.cpp',
   'src/runtime_instance.cpp',
   'src/qemu_api.cpp',
-))
+), declare_dependency(compile_args: ['-Wconversion', '-Wno-error=conversion'])])
 
 # Setup cflags - doesn't work
 #hyde_inc = '-I' + meson.current_source_dir() + '/include'
@@ -21,4 +22,4 @@ if cc.get_id() == 'gcc'
   error('GCC is not supported. Please use Clang.')
 endif
 
-specific_ss.add_all(when: 'CONFIG_KVM', if_true: kvm_ss)
+specific_ss.add_all( when: 'CONFIG_KVM', if_true: kvm_ss)

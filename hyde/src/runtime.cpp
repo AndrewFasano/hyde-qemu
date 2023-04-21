@@ -206,7 +206,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
     //printf("\tSetting retval to %ld\n", target->retval);
   }
 
-  //fprintf(fp, "%p, syscall %lld, returns %lld\n", target, target->orig_regs.rax, new_regs.rax);
+  fprintf(fp, "%p, syscall %lld, returns %lld\n", target, target->orig_regs.rax, new_regs.rax);
   //fflush(fp);
 
   if (!target->parent_ret_pending) {
@@ -220,7 +220,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64
 }
 
 bool Runtime::load_hyde_prog(void* cpu, std::string path) {
-  //fp = fopen("/tmp/sc.txt","w");
+  fp = fopen("/tmp/sc.txt","w");
   return true;
 }
 

@@ -138,6 +138,7 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
   } else if (target->ctr > 0) {
     // Want to run the original syscall. If it returns 2x we have to special case it
     // We have args in new_regs already from orig_regs
+    new_regs.rcx = pc; // Return after syscall on return
 
     if ((callno == SYS_fork || callno == SYS_vfork)) {
       // Guest is trying to do a fork, let's take over. Maybe impossible with !new_target

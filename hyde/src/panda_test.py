@@ -35,8 +35,25 @@ class CallInfo():
 
 register_data = {}  # unique, per syscall key -> CallInfo
 active = {} # (pid, tid): [key, key]. Active syscalls for each thread - list may never have more than 2 elements or we'll assert because that seems wrong
-ctr = 0xd00d000
+
+# Init at a sort of unique value so we can eyeball it later
+ctr_base = 0xd00d000
+ctr = ctr_base
+
+# How many syscalls had syscalls within syscalls?
 waitc = 0
+
+# If we just used PC, how often would we be wrong?
+just_pc_wrong = 0
+just_pc_keys = {} # pc of ret -> key
+
+# If we used ASID as our UID, how often would we be wrong?
+just_asid_wrong = 0
+just_asid_keys = {} # asid -> key
+
+# If we used both asid and PC how often would we be wrong?
+just_asid_pc_wrong = 0
+just_asid_pc_keys = {} # (asid, pc) -> key
 
 def get_pid_tid(panda, cpu):
     current_proc = panda.plugins['osi'].get_current_process(cpu)
@@ -104,14 +121,13 @@ if LOG_INSNS:
 if not TAKE_RECORDING:
     @panda.ppp("syscalls2", "on_all_sys_enter")
     def on_syscall(cpu, pc, callno):
-        if callno == 15:
-            # demagic r14 on sigreturn
-            pid, tid = get_pid_tid(panda, cpu)
-            print(f"SIGRETURN in {pid},{tid}")
-            #panda.arch.set_reg(cpu, "R14", 0) # Hm, sigreturn is about to restore registers, so we shouldn't reallly care? - Without this we diverged?
+        #if callno == 15:
+        #    # demagic r14 on sigreturn
+        #    pid, tid = get_pid_tid(panda, cpu)
+        #    print(f"SIGRETURN in {pid},{tid}")
+        #    #panda.arch.set_reg(cpu, "R14", 0) # Hm, sigreturn is about to restore registers, so we shouldn't reallly care? - Without this we diverged?
 
         if callno in [  
-                         15, # sigreturn
 
                          56, # clone
                          435, # clone3
@@ -119,9 +135,12 @@ if not TAKE_RECORDING:
                          57, # fork
                          58, # vfork
 
-                         # noreturn:
-                         #60, # exit
-                         #231, # exit_group
+                         # noreturn: allowed we can inject into exit/exit_group, but unless they fail, we'll never see them return and we'll leak memory
+                         60, # exit
+                         231, # exit_group
+
+                         # noreturn: prohibited - we can't cleanup R14/R15 for these
+                         15, # sigreturn - This doesn't return, but we'll keep thinking we're waiting on a ret for it, leaking memory and eventually asserting becasue too many pending syscalls for a proc
                          59, # execve
                          322, # execveat
                         ]:
@@ -164,6 +183,13 @@ if not TAKE_RECORDING:
         panda.arch.set_reg(cpu, "R14", MAGIC_VALUE)
         panda.arch.set_reg(cpu, "R15", key)
 
+        asid = panda.current_asid(cpu)
+        just_pc_keys[pc+2] = key
+
+        #print(f"Storing JPK of {pc+2:x} => {key:x}")
+        just_asid_keys[asid] = key
+        just_asid_pc_keys[(asid, pc+2)] = key
+
     # On sysret, restore R14, R15
     # XXX Panda's on_all_sy_return MISSES some returns - we'll use our explicit hooks instead and call this
     #@panda.ppp("syscalls2", "on_all_sys_return")
@@ -191,7 +217,10 @@ if not TAKE_RECORDING:
         fail = None
         try:
             saved = register_data[r15]
-            del register_data[r15]
+            skip = r15 in just_pc_keys.values() or r15 in just_asid_keys.values() or r15 in just_asid_pc_keys.values()
+            if not skip:
+                # Don't delete if one of the bad techniques has a stale reference - we want to see it later to debug them
+                del register_data[r15]
         except KeyError:
             fail = f"Key {r15:x} not found in register_data"
 
@@ -207,6 +236,33 @@ if not TAKE_RECORDING:
 
         panda.arch.set_reg(cpu, "R14", saved.r14)
         panda.arch.set_reg(cpu, "R15", saved.r15)
+
+        global just_pc_wrong, just_asid_wrong, just_asid_pc_wrong
+        if just_pc_keys[pc] != r15:
+            if just_pc_keys[pc] in register_data:
+                print(f"WRONG JPC: have {register_data[just_pc_keys[pc]]} want {saved}")
+            else:
+                print(f"WRONG JPC: have ??? (deleted) want {saved}")
+            just_pc_wrong+=1
+
+        asid = panda.current_asid(cpu)
+        if just_asid_keys[asid] != r15:
+            if just_asid_keys[asid] in register_data:
+                print(f"WRONG ASID: have {register_data[just_asid_keys[asid]]} want {saved}")
+            else:
+                print(f"WRONG ASID: have ??? (deleted) want {saved}")
+            just_asid_wrong+=1
+
+        try:
+            if just_asid_pc_keys[(asid, pc)] != r15:
+                if just_asid_pc_keys[(asid, pc)] in register_data:
+                    print(f"WRONG ASID+PC: have {register_data[just_asid_pc_keys[(asid, pc)]]} want {saved}")
+                else:
+                    print(f"WRONG ASID+PC: have ??? (deleted) want {saved}")
+                just_asid_pc_wrong+=1
+        except KeyError:
+            print(f"WRONG ASID+PC: have ??? (no entry) want {saved}")
+            just_asid_pc_wrong+=1
 
         #print(f"RET {pid},{tid}: {syscalls[saved.callno]}=>{retval}")
 
@@ -235,7 +291,11 @@ if not TAKE_RECORDING:
             saved = register_data[r15]
             if r14 == MAGIC_VALUE:
                 #print(f"SYSRET: {r14:x} {r15:x}: {saved}")
-                on_sysret(cpu, panda.arch.get_pc(cpu), saved.callno)
+                # We're on the sysretq block - we'll jump to RCX (which is the address of the instruction after the syscall)
+                try:
+                    on_sysret(cpu, panda.arch.get_reg(cpu, "RCX"), saved.callno)
+                except Exception as e:
+                    print("ON_SYSRET EXN:", e)
         except KeyError:
             #print(f"SYSRET: {r14:x} {r15:x}: ???")
             pass
@@ -278,4 +338,8 @@ if TAKE_RECORDING:
 else:
     panda.run_replay("coreutils")
 
-    print(f"Of {ctr-0xd00d000} syscalls, {waitc} were nested")
+    print(f"Of {ctr-ctr_base} syscalls, {waitc} were nested")
+
+    print(f"Just PC wrong: {just_pc_wrong}")
+    print(f"Just ASID wrong: {just_asid_wrong}")
+    print(f"Just ASID+PC wrong: {just_asid_pc_wrong}")

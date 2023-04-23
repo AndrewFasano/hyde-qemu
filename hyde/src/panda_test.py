@@ -33,7 +33,6 @@ def get_pid_tid(panda, cpu):
 
     return (pid, tid)
 
-# Before every syscall
 @panda.ppp("syscalls2", "on_all_sys_enter2")
 def on_syscall(cpu, pc, call, rp):
     callno = panda.arch.get_arg(cpu, 0, convention="syscall")
@@ -56,11 +55,10 @@ def on_syscall(cpu, pc, call, rp):
         return
 
     global ctr
-    asid = panda.current_asid(cpu)
-
     r14 = panda.arch.get_reg(cpu, "R14")
     r15 = panda.arch.get_reg(cpu, "R15")
 
+    #asid = panda.current_asid(cpu)
     pid, tid = get_pid_tid(panda, cpu)
 
     key = ctr
@@ -105,9 +103,9 @@ def on_sysret(cpu, pc, call, rp):
         print(f"On return from {callno} in {pid},{tid} (asid {asid:x}))")
         raise RuntimeError(fail)
 
-    if (pid, tid) not in results:
-        results[(pid, tid)] = {}
-    results[(pid, tid)][r15] = (callno, retval)
+    #if (pid, tid) not in results:
+    #    results[(pid, tid)] = {}
+    #results[(pid, tid)][r15] = (callno, retval)
 
     panda.arch.set_reg(cpu, "R14", orig_r14)
     panda.arch.set_reg(cpu, "R15", orig_r15)
@@ -123,20 +121,25 @@ def driver():
     #cmd = "make check CFLAGS='-Wno-error=suggest-attribute=const -Wno-error=type-limits' SUBIDRS=."
     cmd = "make check CFLAGS='-Wno-error=suggest-attribute=const -Wno-error=type-limits' SUBDIRS=. TESTS=tests/tail-2/inotify-race VERBOSE=yes"
 
-    out = panda.run_serial_cmd(cmd, timeout=12000)
+    # Run in background, it will keep printing to stdout though
+    panda.run_serial_cmd(cmd +"&")
+
     with open("out.txt", "w") as f:
-        f.write(out)
-    print(out)
+        # So grab stdout
+        for _ in range(60*10): # Ten min?
+            f.write(panda.run_serial_cmd("sleep 1")+"\n")
+
+
     panda.end_analysis()
 
 panda.run()
 
 
-#results = {} # (pid, tid): {key: (callno, retno)}
-
+'''
 with open("results.txt", "w") as f:
     for ((pid, tid), d) in results.items():
         f.write(f"{pid},{tid}:\n")
         for (key, (callno, retval)) in d.items():
             f.write(f"  {key:x}: {callno}=>{retval}\n")
         f.write("\n")
+'''

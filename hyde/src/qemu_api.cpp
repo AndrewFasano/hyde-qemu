@@ -12,6 +12,8 @@
 #include "qemu/compiler.h"
 #include "exec/hwaddr.h"
 
+static bool hyde_enabled=false;
+
 extern "C" {
     // Can't just include kvm header, it has too much stuff in it.
     // But we're in the same compilation unit, so we can just declare it
@@ -24,23 +26,31 @@ void enable_syscall_introspection(void* cpu, int idx) {
     assert(cpu != nullptr);
     //printf("Enable syscall introspection on CPU %d at %p\n", idx, cpu);
     assert(kvm_vcpu_ioctl_pause_vm(cpu, KVM_HYDE_TOGGLE, 1) == 0);
+    hyde_enabled = true;
 }
 
 void disable_syscall_introspection(void* cpu, int idx) {
     assert(cpu != nullptr);
     //printf("Disable syscall introspection on CPU %d at %p\n", idx, cpu);
     assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 0) == 0);
+    hyde_enabled = false;
 }
 
 bool kvm_unload_hyde(void *cpu, int idx) {
     // Monitor request hits here. This can't work this simply though
     // because if any are actively coopted, we need to wait for them to finish
 
-    assert(cpu != nullptr);
+    if (!hyde_enabled) return false;
+
     get_runtime_instance().unload_all(cpu);
     //printf("Disable syscall introspection on CPU %d at %p\n", idx, cpu);
-    assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 0) == 0);
-  return true;
+    if (cpu != nullptr) {
+        // May be called during shutdown in which case we get a chance to print results, but we don't toggle here
+        // because cpu is null
+        assert(kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, 0) == 0);
+    }
+    hyde_enabled = false;
+    return true;
 }
 
 bool kvm_load_hyde_capability(const char* path, void *cpu, int idx) {

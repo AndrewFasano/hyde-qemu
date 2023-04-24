@@ -23,12 +23,10 @@ magic4 = sysret_pc              | syscall_pc              KVM:R13
 */
 
 #define SKIP_FORK
-
-
 static uint64_t global_ctr = 0;
 static uint64_t N = (uint64_t)-1;
 
-FILE *fp = NULL;
+//FILE *fp = NULL;
 
 struct Data {
   int magic;
@@ -59,7 +57,7 @@ struct Data {
     refcount--;
     if (refcount == 0) {
         magic = -1;
-        fprintf(fp, "Freeing %p\n", this);
+        //fprintf(fp, "Freeing %p\n", this);
         delete this;
     }
   }
@@ -102,7 +100,7 @@ struct Data {
 
   void inject_syscall(void* cpu, int callno, kvm_regs& new_regs) {
     // At a syscall: set magic values so we can detect and clenaup on return
-    fprintf(fp, "Injecting syscall %d at pc %llx. Object is at %p\n", callno, new_regs.rip, this);
+    //fprintf(fp, "Injecting syscall %d at pc %llx. Object is at %p\n", callno, new_regs.rip, this);
     new_regs.rax = (uint64_t)callno;
     new_regs.r12 = reinterpret_cast<uint64_t>(this);
     new_regs.r13 = new_regs.rcx; // next instruction? Uhh
@@ -117,7 +115,7 @@ struct Data {
 
   void at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs) {
     // In a sysert we want to go back to the syscall insn at sc_pc.
-    fprintf(fp, "In sysret, we want to want to re-execute syscall insn at %lx, object is at %p\n", sc_pc, this);
+    //fprintf(fp, "In sysret, we want to want to re-execute syscall insn at %lx, object is at %p\n", sc_pc, this);
 
     new_regs.r12 = reinterpret_cast<uint64_t>(this);
     new_regs.r13 = sc_pc;
@@ -164,7 +162,7 @@ bool Runtime::handle_reinjection(void* cpu, uint64_t pc, uint64_t rax, uint64_t 
   }
 
   if (out_pc != pc) {
-    fprintf(fp, "XXX blocking moved key - key specifies %lx but we're at %lx. Not using target %lx\n", out_pc, pc, out_key);
+    //fprintf(fp, "XXX blocking moved key - key specifies %lx but we're at %lx. Not using target %lx\n", out_pc, pc, out_key);
     // It's valid, but not for this PC - bail, we're probably in a syscall handler
     return false;
   }
@@ -176,7 +174,7 @@ bool Runtime::handle_reinjection(void* cpu, uint64_t pc, uint64_t rax, uint64_t 
   assert(target->magic == 0x12345678);
   assert(target->pending == -1);
 
-  fprintf(fp, "At syscall after injection with target %p, getpid returned %ld, now we're going to set up original syscall to run %lld\n", target, rax, target->orig_regs.rax);
+  //fprintf(fp, "At syscall after injection with target %p, getpid returned %ld, now we're going to set up original syscall to run %lld\n", target, rax, target->orig_regs.rax);
 
   target->ctr++;
 
@@ -213,7 +211,7 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
 
 
     target = new Data(cpu);
-    fprintf(fp, "SYSCALL at %lx: new injection with target at %p, \n", pc, target);
+    //fprintf(fp, "SYSCALL at %lx: new injection with target at %p, \n", pc, target);
 
     kvm_regs new_regs;
     assert(get_regs(cpu, &new_regs)); // Get current registers
@@ -225,11 +223,12 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
   assert(r14 == MAGIC_VALUE && "VMM incorrectly triggered on_sysret");
 
   if ((r12 ^ r13) != r15) {
-    printf("Woah - on sysret have unexpected magic:\n");
-    printf("r12: %lx\n", r12);
-    printf("r13: %lx\n", r13);
-    printf("r15: %lx vs exprected %lx \n", r15, r12 ^ r13);
-    printf("XXX IGNORING???\n");
+    // Yep, this happens sometimes when N>1
+    //printf("Woah - on sysret have unexpected magic:\n");
+    //printf("r12: %lx\n", r12);
+    //printf("r13: %lx\n", r13);
+    //printf("r15: %lx vs exprected %lx \n", r15, r12 ^ r13);
+    //printf("XXX IGNORING???\n");
     return;
   }
 
@@ -238,13 +237,13 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
     return;
   }
 
-  fprintf(fp, "SYSRET with target 0x%lx\n", r12);
+  //fprintf(fp, "SYSRET with target 0x%lx\n", r12);
 
   Data* target = (Data*)r12;
-  if (target->magic != 0x12345678) {
-    fprintf(fp, "FATAL bad magic for target at %p\n", target);
-    fflush(fp);
-  }
+  //if (target->magic != 0x12345678) {
+  //  fprintf(fp, "FATAL bad magic for target at %p\n", target);
+  //  fflush(fp);
+  //}
   assert(target->magic == 0x12345678);
 
   assert(target->pending != -1);
@@ -254,7 +253,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
   assert(get_regs(cpu, &new_regs));
 
   if (target->ctr > 1) {
-    fprintf(fp, "SYSRET at %lx - all done, original sc (%lld) returns %lld, let's clean up target %p\n", pc, target->orig_regs.rax, new_regs.rax, target);
+    //fprintf(fp, "SYSRET at %lx - all done, original sc (%lld) returns %lld, let's clean up target %p\n", pc, target->orig_regs.rax, new_regs.rax, target);
     // All done with injection. Restore original registers
     uint64_t retval = (target->force_retval) ? target->retval : new_regs.rax;
 
@@ -268,7 +267,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
 
     new_regs.rax = retval; // Only changes it if we had force_retval
   } else {
-    fprintf(fp, "SYSRET at %lx - injected syscall returns %llx. Target is at %p\n", pc, new_regs.rax, target);
+    //fprintf(fp, "SYSRET at %lx - injected syscall returns %llx. Target is at %p\n", pc, new_regs.rax, target);
     // We have another syscall to run! Need to go back to pc-2 and ensure we only run at the right time
     target->at_sysret_redo_syscall(cpu, pc-2, new_regs); // Updates new_regs
   }
@@ -277,7 +276,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
 }
 
 bool Runtime::load_hyde_prog(void* cpu, std::string path) {
-  fp = fopen("/tmp/sc.txt","w");
+  //fp = fopen("/tmp/sc.txt","w");
 
   // Get N from env and convert to int. On error abort
   N = (uint64_t)(getenv("N") ? atoi(getenv("N")) : -1);
@@ -289,6 +288,7 @@ bool Runtime::load_hyde_prog(void* cpu, std::string path) {
 }
 
 bool Runtime::unload_all(void* cpu) {
+  std::cerr << "Finished after " << global_ctr << " syscalls (injected every " << N << ")" << std::endl;
   return true;
 }
 
@@ -298,6 +298,6 @@ bool Runtime::unload_hyde_prog(void* cpu, std::string path) {
 
 // Implement the custom deleter
 void PluginDeleter::operator()(Plugin *plugin) const {
-  fclose(fp);
+  //fclose(fp);
   delete plugin;
 }

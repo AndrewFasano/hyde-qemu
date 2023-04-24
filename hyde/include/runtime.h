@@ -32,10 +32,10 @@ using PluginPtr = std::unique_ptr<Plugin, PluginDeleter>;
 
 class Runtime {
 public:
-  void load_plugin(const std::string& plugin_path);
-  void unload_plugin(const std::string& plugin_path);
+  //void load_plugin(const std::string& plugin_path);
+  //void unload_plugin(const std::string& plugin_path);
 
-  bool load_hyde_prog(void* cpu, std::string path);
+  bool load_hyde_prog(std::string path);
   bool unload_hyde_prog(void* cpu, std::string path);
   bool unload_all(void* cpu);
 
@@ -43,8 +43,8 @@ public:
   void on_sysret( void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
 
 private:
-  syscall_context* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned long fs, int callno, unsigned long asid, unsigned long pc);
-  bool is_syscall_targetable(int callno, unsigned long asid);
+  //syscall_context* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned long fs, int callno, unsigned long asid, unsigned long pc);
+  //bool is_syscall_targetable(int callno, unsigned long asid);
 
   using PluginPtr = std::unique_ptr<Plugin>;
   using CreatePluginFunc = Plugin* (*)();
@@ -72,10 +72,8 @@ private:
   std::unordered_map<std::string, LoadedPlugin> loaded_plugins_;
   std::set<syscall_context*> coopted_procs_ = {}; // Procs that have been coopted
 
-  std::set<syscall_context*> double_return_parents_ = {};
-  std::set<syscall_context*> double_return_children_ = {};
-
-  //std::vector<SyscallHandler> all_syscalls_handlers_;
+  //std::set<syscall_context*> double_return_parents_ = {};
+  //std::set<syscall_context*> double_return_children_ = {};
 
   using PluginInitFn = bool (*)(std::unordered_map<int, create_coopter_t>&);
 };

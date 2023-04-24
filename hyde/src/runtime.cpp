@@ -3,10 +3,12 @@
 #include "plugin_common.h"
 #include "syscall_coroutine.h"
 #include "runtime.h"
+#include "hsyscall.h"
 #include "syscall_context_internal.h"
 #include "qemu_api.h"
 #include <syscall.h>
 #include <cstring>
+#include <algorithm>
 
 // Set on syscall, looked for on sysret
 #define MAGIC_VALUE 0xdeadbeef
@@ -28,6 +30,7 @@ static uint64_t N = (uint64_t)-1;
 
 //FILE *fp = NULL;
 
+// XXX this needs to merge with struct syscall_context from hyde_common
 struct Data {
   int magic;
   kvm_regs orig_regs;
@@ -37,16 +40,24 @@ struct Data {
   uint64_t retval;
   int pending;
   int ctr;
+  hsyscall* orig_syscall;
+  coopter_t coopter;
 
   // Initialize and orig_regs based on CPU
   Data(void* cpu) : magic(0x12345678), orig_regs(), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(-1), ctr(0), refcount(1) {
       assert(get_regs(cpu, &orig_regs));
+      orig_syscall = new hsyscall(orig_regs.rax);
+      uint64_t args[6];
+      for (int i = 0; i < 6; i++) {
+        args[i] = get_arg(details->orig_regs, (RegIndex)i);
+      }
+      orig_syscall->set_args(6, args);
   }
 
   // Create a new instance with the same orig_regs as the old - XXX drop this?
-  Data(const Data& other) : magic(0x12345678), parent_ret_pending(false), child_call_pending(false), force_retval(false), retval(0), pending(-1), ctr(0), refcount(1) {
-      std::memcpy(&orig_regs, &other.orig_regs, sizeof(kvm_regs));
-  }
+  //Data(const Data& other) : magic(0x12345678), parent_ret_pending(false), child_call_pending(false), force_retval(false), retval(0), pending(-1), ctr(0), refcount(1) {
+  //    std::memcpy(&orig_regs, &other.orig_regs, sizeof(kvm_regs));
+  //}
 
   // Helper methods
   void addRef() {
@@ -188,7 +199,6 @@ bool Runtime::handle_reinjection(void* cpu, uint64_t pc, uint64_t rax, uint64_t 
 
 void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
   Data* target = nullptr;
-
   int callno = (int)rax;
 
   if (callno ==  SYS_rt_sigreturn ||
@@ -203,19 +213,43 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
 
   if (!handle_reinjection(cpu, pc, rax, r12, r13, r14, r15)) {
     // If we had to advance a coroutine and all that we've already done it.
-    // Instead, we're here so it's our first time with this one. Let's co-opt if we want to
+    // Instead, we're here so this is our first chance to inject on this syscall.
 
-    if (global_ctr++ % N != 0) [[likely]] {
-      return; // We're not interested
+    // Find a coopter for this sycall if one is registered. -1 beats anything else
+    create_coopter_t *f = NULL;
+    if (syscall_handlers_.find(-1) != syscall_handlers_.end()) {
+      // We have a catchall, pretend callno is -1 so we use it
+      callno = -1;
     }
 
+    if (syscall_handlers_.find(callno) != syscall_handlers_.end()) {
+      // Get & store original registers before we run the coopter's first iteration
+      f = &syscall_handlers_[callno];
+    }
+
+    if (f == NULL) return; // No coopter for this syscall
+
+    std::string name; // Which hyde program is this for?A
+    // Look through coopters_map and find the key that has this callno
+    for (auto it = coopters_map_.begin(); it != coopters_map_.end(); it++) {
+      // does this hyde program's coopted syscall vector contain callno?
+      if (std::find(it->second.begin(), it->second.end(), callno) != it->second.end()) {
+        name = it->first;
+        break;
+      }
+    }
 
     target = new Data(cpu);
     //fprintf(fp, "SYSCALL at %lx: new injection with target at %p, \n", pc, target);
 
-    kvm_regs new_regs;
-    assert(get_regs(cpu, &new_regs)); // Get current registers
-    target->inject_syscall(cpu, SYS_getpid, new_regs); // Clobber RAX/R14/R15 with syscall->sysret magic values so we inject getpid
+    // Create original syscall using info from regs
+    coopted_procs_.insert(target);
+
+    target->coopter = (*f)(details).h_;
+    details->name = name;
+
+
+
   }
 }
 
@@ -275,29 +309,88 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
   assert(set_regs(cpu, &new_regs)); // Apply new_regs
 }
 
-bool Runtime::load_hyde_prog(void* cpu, std::string path) {
-  //fp = fopen("/tmp/sc.txt","w");
+bool Runtime::load_hyde_prog(std::string path) {
+  // introspection is enabled and program should be unique by the time we get here
 
-  // Get N from env and convert to int. On error abort
-  N = (uint64_t)(getenv("N") ? atoi(getenv("N")) : -1);
-
-  if (N == (uint64_t)-1) {
-    printf("WARNING: [HyDE] N not set - not injecting getpid\n\n\n");
+  void* handle = dlopen(path.c_str(), RTLD_NOW);
+  if (handle == NULL) {
+    std::cerr  << "Could not open capability at " << path << ": " << dlerror() << std::endl;
+    return false;
   }
-  return N != (uint64_t)-1;
+
+  // Get init_plugin function and call it
+  auto init_plugin = reinterpret_cast<PluginInitFn>(dlsym(handle, "init_plugin"));
+  if (init_plugin == nullptr) {
+      std::cerr << "Failed to get init function: " << dlerror() << std::endl;
+      dlclose(handle);
+      return 1;
+  }
+  std::unordered_map<int, create_coopter_t> handlers;
+  bool rv = init_plugin(handlers);
+
+  if (!rv) return false;
+
+  // If plugin returned true, take it's updates to the handlers map
+  // Raise errors on duplicate key conflicts between hyde programs
+  // ALso store the mapping from programs -> hooked syscalls
+
+  std::vector<int> hooked_scs;
+  for (auto it = handlers.begin(); it != handlers.end(); ++it) {
+    int key = it->first;
+    create_coopter_t handler = it->second;
+
+    // If we already have a handler for this key, error
+    if (syscall_handlers_.count(key)) {
+      std::cerr << "ERROR: Two HyDE programs request to coopt syscall " << key << std::endl;
+      return false;
+    }
+
+    // Otherwise, store the handler and that this hyde program uses it
+    syscall_handlers_[key] = handler;
+    hooked_scs.push_back(key);
+
+    std::cout << "HyDE program " << path << " will coopt SYS_" << key  << std::endl;
+  }
+  coopters_map_[path] = hooked_scs;
+
+  return true;
 }
 
 bool Runtime::unload_all(void* cpu) {
-  std::cerr << "Finished after " << global_ctr << " syscalls (injected every " << N << ")" << std::endl;
+  // Called at qemu shutdown - good place to log results / call uninit methods on loaded programs
+  //std::cerr << "Finished after " << global_ctr << " syscalls (injected every " << N << ")" << std::endl;
+
+  // TODO: for each program, call unload
+  std::cerr << "TODO cleanly unload all hyde prgraoms" << std::endl;
+  //disable_syscall_introspection(cpu, idx);
+
   return true;
 }
 
 bool Runtime::unload_hyde_prog(void* cpu, std::string path) {
+  if (!coopters_map_.count(path)) {
+    std::cerr << "HyDE program " << path << " has not been loaded" << std::endl;
+    return false;
+  }
+
+  // Remove all the coopted syscalls that this program set up
+  // Now we won't intercept future calls to these
+  for (auto it = coopters_map_[path].begin(); it != coopters_map_[path].end(); ++it) {
+    int key = *it;
+    syscall_handlers_.erase(key);
+  }
+  // XXX TODO: if we have no active coopters and no hyde programs loaded we can disable HyDE now
+
+  // If this hyde program has no active coopters, we can now erase it and possibly disablre
+  // otherwise we have to wait until they all finish
+  //coopters_map.erase(path);
+  //if (coopters_map.empty()) {
+  //  disable_syscall_introspection(cpu, idx);
+  //}
   return true;
 }
 
-// Implement the custom deleter
+// Implement the custom deleter, necessary for some reason
 void PluginDeleter::operator()(Plugin *plugin) const {
-  //fclose(fp);
   delete plugin;
 }

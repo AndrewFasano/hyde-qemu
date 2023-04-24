@@ -163,6 +163,7 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     // after this syscall
     target = new_target;
     //fprintf(fp, "Created new target for parent %p\n", target);
+    // We have an extra restore we need to do here - we clobbered r15
 
     // Force getpid, return child pc (callno), then continue
     target->update_regs_for_nop(pc, (uint64_t)callno);
@@ -176,16 +177,18 @@ void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint6
     //fprintf(fp, "Syscall %d after injection: %p\n", callno, target);
 
     if (target->pending != -1) {
-      // Psych, we're actually in a signal handler!
-      // Change r14 to junk so we ignore this. On sigreturn target will get our magic r14/r15 again
-
+      // Psych, we're actually in a signal handler! Let's allocate a new target for this nested syscall, backed by the original data
       //fprintf(fp, "Detected signal handler at %lx callno %d with pending %d changing R14 target is %p\n", pc, callno, target->pending, target);
-      kvm_regs regs;
-      assert(get_regs(cpu, &regs));
-      regs.r14 = JUNK_R14;
-      regs.r15 = JUNK_R14;
-      assert(set_regs(cpu, &regs));
-      return;
+      
+      // We have magic values in this process, we'll make new magics up but we need some value to restore to on ret if this ever returns
+      // Assume if we kept magic, a sane restore value would be the restore values of the original data
+      Data* new_target = new Data(cpu);
+      new_target->orig_regs.r14 = target->orig_regs.r14;
+      new_target->orig_regs.r15 = target->orig_regs.r15;
+
+      // Don't release target, it should still expect a return
+      // So just swap in new_target
+      target = new_target;
     }
 
     if (target->child_call_pending) {
@@ -306,6 +309,10 @@ bool Runtime::load_hyde_prog(void* cpu, std::string path) {
 
   // Get N from env and convert to int. On error abort
   N = (uint64_t)(getenv("N") ? atoi(getenv("N")) : -1);
+
+  if (N == (uint64_t)-1) {
+    printf("WARNING: [HyDE] N not set - not injecting getpid\n\n\n");
+  }
   return N != (uint64_t)-1;
 }
 

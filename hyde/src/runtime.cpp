@@ -15,10 +15,11 @@
 #define MAGIC_VALUE_REPEAT 0xb1ade001
 
 /*
+        syscall->ret              sysret->syscall
 magic1 = 0xdeadbeef             | 0xb1ade000              KVM:R14
-magic2 = key                    | key^syscall_pc          KVM:R15
-magic3 = unused                 | key                     KVM:R12
-magic4 = unused                 | syscall_pc              KVM:R13
+magic2 = key^sysret_pc          | key^syscall_pc          KVM:R15
+magic3 = key                    | key                     KVM:R12
+magic4 = sysret_pc              | syscall_pc              KVM:R13
 */
 
 #define SKIP_FORK
@@ -58,11 +59,12 @@ struct Data {
     refcount--;
     if (refcount == 0) {
         magic = -1;
-        //fprintf(fp, "Freeing %p\n", this);
+        fprintf(fp, "Freeing %p\n", this);
         delete this;
     }
   }
 
+/*
   bool is_fork(int callno) const {
     return callno == SYS_fork || callno == SYS_vfork;
   }
@@ -74,12 +76,20 @@ struct Data {
     child_call_pending = true;
   }
 
+  void update_regs_for_nop(uint64_t pc, uint64_t new_retval) {
+    orig_regs.rax = retval;
+    orig_regs.rcx = pc;
+    orig_regs.rax = SYS_getpid;
+    force_retval = true;
+    retval = new_retval;
+  }
+
   void update_regs_for_injected_syscall(kvm_regs& new_regs, uint64_t new_callno, uint64_t pc) {
     // TODO: this would need to also support arguments
     new_regs.rax = new_callno;
     new_regs.rcx = pc - 2; // Re-exec current syscall
   }
-
+*/
 
   void restore_registers_for_reinjection(kvm_regs &new_regs) {
     // Restore R12, R13, R14, R15 from orig_regs - this is 
@@ -90,19 +100,14 @@ struct Data {
     new_regs.r15 = orig_regs.r15;
   }
 
-  void update_regs_for_nop(uint64_t pc, uint64_t new_retval) {
-    orig_regs.rax = retval;
-    orig_regs.rcx = pc;
-    orig_regs.rax = SYS_getpid;
-    force_retval = true;
-    retval = new_retval;
-  }
-
   void inject_syscall(void* cpu, int callno, kvm_regs& new_regs) {
     // At a syscall: set magic values so we can detect and clenaup on return
+    fprintf(fp, "Injecting syscall %d at pc %llx. Object is at %p\n", callno, new_regs.rip, this);
     new_regs.rax = (uint64_t)callno;
+    new_regs.r12 = reinterpret_cast<uint64_t>(this);
+    new_regs.r13 = new_regs.rcx; // next instruction? Uhh
     new_regs.r14 = MAGIC_VALUE;
-    new_regs.r15 = reinterpret_cast<uint64_t>(this);
+    new_regs.r15 = new_regs.r12 ^ new_regs.r13;
 
     pending = (int)new_regs.rax; // Callno, won't overflow an int
     ctr++;
@@ -112,6 +117,7 @@ struct Data {
 
   void at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs) {
     // In a sysert we want to go back to the syscall insn at sc_pc.
+    fprintf(fp, "In sysret, we want to want to re-execute syscall insn at %lx, object is at %p\n", sc_pc, this);
 
     new_regs.r12 = reinterpret_cast<uint64_t>(this);
     new_regs.r13 = sc_pc;
@@ -158,7 +164,7 @@ bool Runtime::handle_reinjection(void* cpu, uint64_t pc, uint64_t rax, uint64_t 
   }
 
   if (out_pc != pc) {
-    printf("XXX blocking moved key - key specifies %lx but we're at %lx\n", out_pc, pc);
+    fprintf(fp, "XXX blocking moved key - key specifies %lx but we're at %lx. Not using target %lx\n", out_pc, pc, out_key);
     // It's valid, but not for this PC - bail, we're probably in a syscall handler
     return false;
   }
@@ -170,7 +176,7 @@ bool Runtime::handle_reinjection(void* cpu, uint64_t pc, uint64_t rax, uint64_t 
   assert(target->magic == 0x12345678);
   assert(target->pending == -1);
 
-  //printf("After injection with %lx we see getpid returned %ld\n", reinterpret_cast<uint64_t>(target), rax);
+  fprintf(fp, "At syscall after injection with target %p, getpid returned %ld, now we're going to set up original syscall to run %lld\n", target, rax, target->orig_regs.rax);
 
   target->ctr++;
 
@@ -207,7 +213,7 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
 
 
     target = new Data(cpu);
-    //printf("SYSCALL at %lx: new injection %lx, \n", pc, reinterpret_cast<uint64_t>(target));
+    fprintf(fp, "SYSCALL at %lx: new injection with target at %p, \n", pc, target);
 
     kvm_regs new_regs;
     assert(get_regs(cpu, &new_regs)); // Get current registers
@@ -218,7 +224,27 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
 void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
   assert(r14 == MAGIC_VALUE && "VMM incorrectly triggered on_sysret");
 
-  Data* target = (Data*)r15;
+  if ((r12 ^ r13) != r15) {
+    printf("Woah - on sysret have unexpected magic:\n");
+    printf("r12: %lx\n", r12);
+    printf("r13: %lx\n", r13);
+    printf("r15: %lx vs exprected %lx \n", r15, r12 ^ r13);
+    printf("XXX IGNORING???\n");
+    return;
+  }
+
+  if (r13 != pc) {
+    printf("XXX On sysret expected pc %lx but have %lx - ignoring (?) \n", r13, pc);
+    return;
+  }
+
+  fprintf(fp, "SYSRET with target 0x%lx\n", r12);
+
+  Data* target = (Data*)r12;
+  if (target->magic != 0x12345678) {
+    fprintf(fp, "FATAL bad magic for target at %p\n", target);
+    fflush(fp);
+  }
   assert(target->magic == 0x12345678);
 
   assert(target->pending != -1);
@@ -228,11 +254,13 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
   assert(get_regs(cpu, &new_regs));
 
   if (target->ctr > 1) {
-    //printf("SYSRET at %lx - all done, original sc (%lld) returns %lld\n", pc, target->orig_regs.rax, new_regs.rax);
+    fprintf(fp, "SYSRET at %lx - all done, original sc (%lld) returns %lld, let's clean up target %p\n", pc, target->orig_regs.rax, new_regs.rax, target);
     // All done with injection. Restore original registers
     uint64_t retval = (target->force_retval) ? target->retval : new_regs.rax;
 
-    // Restore original R14/R15 values and decrement refcount
+    // Restore original R12-15 values and decrement refcount
+    new_regs.r12 = target->orig_regs.r12;
+    new_regs.r13 = target->orig_regs.r13;
     new_regs.r14 = target->orig_regs.r14;
     new_regs.r15 = target->orig_regs.r15;
     target->magic = -1;
@@ -240,7 +268,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
 
     new_regs.rax = retval; // Only changes it if we had force_retval
   } else {
-    //printf("SYSRET at %lx - more to come, go back to %lx\n", pc, pc-2);
+    fprintf(fp, "SYSRET at %lx - injected syscall returns %llx. Target is at %p\n", pc, new_regs.rax, target);
     // We have another syscall to run! Need to go back to pc-2 and ensure we only run at the right time
     target->at_sysret_redo_syscall(cpu, pc-2, new_regs); // Updates new_regs
   }
@@ -249,7 +277,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
 }
 
 bool Runtime::load_hyde_prog(void* cpu, std::string path) {
-  //fp = fopen("/tmp/sc.txt","w");
+  fp = fopen("/tmp/sc.txt","w");
 
   // Get N from env and convert to int. On error abort
   N = (uint64_t)(getenv("N") ? atoi(getenv("N")) : -1);
@@ -270,6 +298,6 @@ bool Runtime::unload_hyde_prog(void* cpu, std::string path) {
 
 // Implement the custom deleter
 void PluginDeleter::operator()(Plugin *plugin) const {
-  //fclose(fp); // Uhh?
+  fclose(fp);
   delete plugin;
 }

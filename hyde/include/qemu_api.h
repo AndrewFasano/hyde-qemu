@@ -18,10 +18,10 @@ extern "C" {
     bool kvm_unload_hyde_capability(const char* path, void *cpu, int idx);
 
     // QEMU informs HyDE that a syscall has been detected
-    void on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint64_t r11, uint64_t r14, uint64_t r15, uint64_t cpu_id);
+    void on_syscall(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
 
     // QEMU informs HyDE that a sysret has been detected
-    void  on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15, uint64_t cpu_id);
+    void on_sysret(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
 
     // Outgoing API: HyDE requests something from QEMU
     bool translate_gva(void* cpu, uint64_t gva, uint64_t* gpa);

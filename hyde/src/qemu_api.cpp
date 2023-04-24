@@ -6,7 +6,7 @@
 
 // This param is from our custom kernel in uapi/linux/kvm.h // #define KVM_HYDE_TOGGLE      _IOR(KVMIO,   0xbb, bool)
 // this evalutes to 8001aebb
-#define KVM_HYDE_TOGGLE 0x8001aebb
+#define KVM_HYDE_TOGGLE (int)0x8001aebb
 
 // get hwaddr typedef
 #include "qemu/compiler.h"
@@ -57,12 +57,12 @@ bool kvm_unload_hyde_capability(const char* path, void *cpu, int idx) {
     return get_runtime_instance().unload_hyde_prog(cpu, std::string(path));
 }
 
-void on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint64_t r11, uint64_t r14, uint64_t r15, uint64_t cpu_id) {
-    return get_runtime_instance().on_syscall(cpu, pc, callno, rcx, r11, r14, r15, cpu_id);
+void on_syscall(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
+    return get_runtime_instance().on_syscall(cpu, pc, rax, r12, r13, r14, r15);
 }
 
-void on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15, uint64_t cpu_id) {
-    return get_runtime_instance().on_sysret(cpu, pc, retval, r14, r15, cpu_id);
+void on_sysret(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
+    return get_runtime_instance().on_sysret(cpu, pc, rax, r12, r13, r14, r15);
 }
 
 bool can_translate_gva(void* cpu, uint64_t gva) {

@@ -8,9 +8,18 @@
 #include <syscall.h>
 #include <cstring>
 
-#define R14_INJECTED 0xdeadbeef
-#define R14_INJECTED_PARENT 0x5ca1ab1e
-#define JUNK_R14 0xcafebabe
+// Set on syscall, looked for on sysret
+#define MAGIC_VALUE 0xdeadbeef
+
+// Set on sysret, looked for on syscall - only when repeating
+#define MAGIC_VALUE_REPEAT 0xb1ade001
+
+/*
+magic1 = 0xdeadbeef             | 0xb1ade000              KVM:R14
+magic2 = key                    | key^syscall_pc          KVM:R15
+magic3 = unused                 | key                     KVM:R12
+magic4 = unused                 | syscall_pc              KVM:R13
+*/
 
 #define SKIP_FORK
 
@@ -28,16 +37,15 @@ struct Data {
   bool force_retval;
   uint64_t retval;
   int pending;
-  uint64_t pending_pc;
   int ctr;
 
   // Initialize and orig_regs based on CPU
-  Data(void* cpu) : magic(0x12345678), orig_regs(), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(-1), pending_pc(0), ctr(0), refcount(1) {
+  Data(void* cpu) : magic(0x12345678), orig_regs(), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(-1), ctr(0), refcount(1) {
       assert(get_regs(cpu, &orig_regs));
   }
 
-  // Create a new instance with the same orig_regs as the old
-  Data(const Data& other) : magic(0x12345678), parent_ret_pending(false), child_call_pending(false), force_retval(false), retval(0), pending(-1), pending_pc(0), ctr(0), refcount(1) {
+  // Create a new instance with the same orig_regs as the old - XXX drop this?
+  Data(const Data& other) : magic(0x12345678), parent_ret_pending(false), child_call_pending(false), force_retval(false), retval(0), pending(-1), ctr(0), refcount(1) {
       std::memcpy(&orig_regs, &other.orig_regs, sizeof(kvm_regs));
   }
 
@@ -72,6 +80,15 @@ struct Data {
     new_regs.rcx = pc - 2; // Re-exec current syscall
   }
 
+
+  void restore_registers(kvm_regs &new_regs) {
+    // Restore R12, R13, R14, R15 from orig_regs
+    new_regs.r12 = orig_regs.r12;
+    new_regs.r13 = orig_regs.r13;
+    new_regs.r14 = orig_regs.r14;
+    new_regs.r15 = orig_regs.r15;
+  }
+
   void update_regs_for_nop(uint64_t pc, uint64_t new_retval) {
     orig_regs.rax = retval;
     orig_regs.rcx = pc;
@@ -85,14 +102,29 @@ struct Data {
     new_regs.rcx = pc;
   }
 
-  void prepare_to_run(void* cpu, kvm_regs& new_regs) {
-    // Set magic r14/r15, store callno in pending, bump ctr, and set regs
-    new_regs.r14 = R14_INJECTED;
+  void inject_syscall(void* cpu, int callno, kvm_regs& new_regs) {
+    // At a syscall: set magic values so we can detect and clenaup on return
+    new_regs.rax = (uint64_t)callno;
+    new_regs.r14 = MAGIC_VALUE;
     new_regs.r15 = reinterpret_cast<uint64_t>(this);
+
     pending = (int)new_regs.rax; // Callno, won't overflow an int
-    pending_pc = new_regs.rcx;
     ctr++;
+
     assert(set_regs(cpu, &new_regs));
+  }
+
+  void at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs) {
+    // In a sysert we want to go back to the syscall insn at sc_pc.
+
+    new_regs.r12 = reinterpret_cast<uint64_t>(this);
+    new_regs.r13 = sc_pc;
+    new_regs.r14 = MAGIC_VALUE_REPEAT;
+    new_regs.r15 = new_regs.r12 ^ new_regs.r13;
+
+    // And change our PC to sc_pc as well via RCX. This works, we used it previously:
+    // https://github.com/AndrewFasano/hhyde-qemu/blob/6b15778ff2e2f56e3b3311f2a4a3b608026e4ba5/accel/kvm/hyde.cpp#L539
+    new_regs.rip = sc_pc;
   }
 
 private:
@@ -105,203 +137,118 @@ Runtime::LoadedPlugin::~LoadedPlugin() = default;
 // On syscall stick a host ptr in r15
 // On sysret use host ptr to cleanup and examine register delta
 
-void Runtime::on_syscall(void* cpu, uint64_t pc, int callno, uint64_t rcx, uint64_t r11, uint64_t r14, uint64_t r15, uint64_t cpu_id) {
-  Data* target = nullptr;
+bool get_magic_values(uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15, uint64_t *out_key, uint64_t *out_pc) {
+  if (r14 != MAGIC_VALUE_REPEAT) return false;
 
-  if (callno ==  SYS_rt_sigreturn) {
-    // Sigreturn will pop kernel-saved registers at the end of a signal handler.
-    // The kernel-saved regs should include our magic value if the signal was raised while in a tracked syscall
-    // When this event happens, we can't reliably lookup our data struct, but if we had one it will reliably be
-    // restored - so do nothing here.
-
-    // Sanity check - are we restoring to something after we saw a pending? That would be cool
-    // XXX By the time the signal handlers calls sigreturn I think it could've easily changed r14/r15
-#if 0
-  // Huh, this happens a lot
-  if (r14 == R14_INJECTED) {
-      target = (Data*)r15;
-      if (target->pending != -1) {
-        printf("Sigreturn going back to previously-pending syscall %d\n", target->pending);
-      }
-    }
-#endif
-    return;
+  if ((r12 ^ r13) != r15) {
+    printf("XXX detected key mutation (ignore): R14 is %lx R12 is %lx and R13 is %lx. Expected %lx but have %lx\n", r14, r12, r13, r12 ^ r13, r15);
+    return false;
   }
 
-  if (callno == SYS_clone || callno == SYS_clone3) {
-    // Special case: child can't see altered R14/R15 so we must ignore these
-    // We could probably use the same approach as we do fork here if we wanted to track.
-    return;
-  }
 
-  if (callno == SYS_exit || callno == SYS_exit_group || callno == SYS_execve || callno == SYS_execveat) {
-    // noreturn: don't try tracking these since cleaning up heap allocated data would be hard
-    return;
-  }
-
-#ifdef SKIP_FORK
-  if (callno == SYS_fork || callno == SYS_vfork) {
-    // Testing - can we just ignore?
-    return;
-  }
-#endif
-
-
-  if (r14 == R14_INJECTED_PARENT) {
-    target = (Data*)r15;
-    assert(target->magic == 0x12345678);
-    //fprintf(fp, "Syscall %d with injected parent: %p\n", callno, target);
-
-    //printf("SYSCALL aT %lx: Parent's forced syscall. child pid is %d, refcount is %d--\n", pc, callno, target->refcount);
-
-    // Create a copy of target to use
-    Data* new_target = new Data(*target);
-    target->release();
-
-    // Update our new target (will be placed in r15 later)
-    // We want to run getpid, return callno (child PID), and then resume at pc which is just
-    // after this syscall
-    target = new_target;
-    //fprintf(fp, "Created new target for parent %p\n", target);
-    // We have an extra restore we need to do here - we clobbered r15
-
-    // Force getpid, return child pc (callno), then continue
-    target->update_regs_for_nop(pc, (uint64_t)callno);
-
-  } else if (r14 == R14_INJECTED) {
-    // We injected a syscall, it returned, and now we're injecting again
-    // For this minimal example, this means we ran getpid and now we're onto
-    // the original syscall
-    target = (Data*)r15;
-    assert(target->magic == 0x12345678); // Checking for UAFs for debugging
-    //fprintf(fp, "Syscall %d after injection: %p\n", callno, target);
-
-    if (target->pending != -1) {
-      // Psych, we're actually in a signal handler! Let's allocate a new target for this nested syscall, backed by the original data
-      //fprintf(fp, "Detected signal handler at %lx callno %d with pending %d changing R14 target is %p\n", pc, callno, target->pending, target);
-      
-      // We have magic values in this process, we'll make new magics up but we need some value to restore to on ret if this ever returns
-      // Assume if we kept magic, a sane restore value would be the restore values of the original data
-      Data* new_target = new Data(cpu);
-      new_target->orig_regs.r14 = target->orig_regs.r14;
-      new_target->orig_regs.r15 = target->orig_regs.r15;
-
-      // Don't release target, it should still expect a return
-      // So just swap in new_target
-      target = new_target;
-    }
-
-    if (target->child_call_pending) {
-      // Child is now running and it hits our forced syscall, start
-      // with a no-op then return 0
-      Data* new_target = new Data(*target);
-      target->release();
-      target = new_target;
-      //fprintf(fp, "Created target %p for child\n", target);
-
-      // Force getpid, return 0, go to next insn (PC)
-      target->update_regs_for_nop(pc, 0);
-    }
-
-    assert(target->ctr < 2); // Ctr is 0 for our inject, then 1 for original
-
-  } else {
-    // First time hitting a syscall, allocate our Data and grab orig regs
-
-    if (global_ctr++ % N == 0) [[unlikely]] {
-      target = new Data(cpu);
-      //fprintf(fp, "Created new target %p\n", target);
-      //fprintf(fp, "Syscall %d just created: %p\n", callno, target);
-    } else {
-      //target->ctr = 1; // Don't inject the rest of the time
-      return;
-    }
-  }
-
-  kvm_regs new_regs = target->orig_regs;
-
-  if (target->ctr == 0) {
-    // First time, inject getpid
-    target->update_regs_for_injected_syscall(new_regs, SYS_getpid, pc);
-
-  } else if (target->ctr > 0) {
-    // Second time - run original syscall. Or if it's a fork, handle it
-    // Update PC to next insn
-    //fprintf(fp, "Syscall running original %lld with target %p\n", new_regs.rax, target);
-    target->update_regs_for_original_syscall(new_regs, pc);
-
-    if (target->is_fork(callno)) {
-      target->handle_fork(new_regs, pc);
-    }
-  }
-
-  target->prepare_to_run(cpu, new_regs);
-  //fprintf(fp, "CALL #%d cpu %ld, target %p set callno to %lld, pending=%d, pending_pc=%lx\n", target->ctr, cpu_id, target, new_regs.rax, target->pending, target->pending_pc);
+  //printf("Valid magic, out_key is %lx, out_pc is %lx\n", r12, r13);
+  *out_key = r12;
+  *out_pc = r13;
+  return true;
 }
 
-void Runtime::on_sysret(void* cpu, uint64_t pc, int retval, uint64_t r14, uint64_t r15, uint64_t cpu_id) {
+bool Runtime::handle_reinjection(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
+  uint64_t out_key;
+  uint64_t out_pc;
 
-  assert(r14 == R14_INJECTED && "VMM incorrectly triggered on_sysret");
+  if (!get_magic_values(r12, r13, r14, r15, &out_key, &out_pc)) {
+    // No magic present
+    return false;
+  }
+
+  if (out_pc != pc) {
+    printf("XXX blocking moved key - key specifies %lx but we're at %lx\n", out_pc, pc);
+    // It's valid, but not for this PC - bail, we're probably in a syscall handler
+    return false;
+  }
+
+  // Alright, we want to inject a syscall here based off our out_key
+  Data* target = reinterpret_cast<Data*>(out_key);
+
+  // Sanity checks - it's valid and not waiting on a syscall
+  assert(target->magic == 0x12345678);
+  assert(target->pending == -1);
+
+  //printf("After injection with %lx we see getpid returned %ld\n", reinterpret_cast<uint64_t>(target), rax);
+
+  target->ctr++;
+
+  kvm_regs new_regs;
+  assert(get_regs(cpu, &new_regs)); // Get current registers
+  target->restore_registers(new_regs); // Restore R12-R15 to original values
+  target->inject_syscall(cpu, target->orig_regs.rax, new_regs); // Clobber R14/R15 with syscall->sysret magic values
+
+  return true; // We're injecting here - don't fall back to the normal handler that could start a new injection
+}
+
+void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
+  Data* target = nullptr;
+
+  int callno = (int)rax;
+
+  if (callno ==  SYS_rt_sigreturn ||
+      callno == SYS_clone || callno == SYS_clone3 ||
+      callno == SYS_exit || callno == SYS_exit_group ||
+      callno == SYS_execve || callno == SYS_execveat ||
+      callno == SYS_fork || callno == SYS_vfork) { /* These last two should be changed if we try to disable SKIP_FORK */
+    return;
+  }
+
+  uint64_t pc = next_pc-2;
+
+  if (!handle_reinjection(cpu, pc, rax, r12, r13, r14, r15)) {
+    // If we had to advance a coroutine and all that we've already done it.
+    // Instead, we're here so it's our first time with this one. Let's co-opt if we want to
+
+    if (global_ctr++ % N != 0) [[likely]] {
+      return; // We're not interested
+    }
+
+
+    target = new Data(cpu);
+    //printf("SYSCALL at %lx: new injection %lx, \n", pc, reinterpret_cast<uint64_t>(target));
+
+    kvm_regs new_regs;
+    assert(get_regs(cpu, &new_regs)); // Get current registers
+    target->inject_syscall(cpu, SYS_getpid, new_regs); // Clobber RAX/R14/R15 with syscall->sysret magic values so we inject getpid
+  }
+}
+
+void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
+  assert(r14 == MAGIC_VALUE && "VMM incorrectly triggered on_sysret");
 
   Data* target = (Data*)r15;
   assert(target->magic == 0x12345678);
 
-  //fprintf(fp, "RET #%d cpu %ld target %p pending=%d pending_pc=%lx, retval=%d pc=%lx\n", target->ctr, cpu_id, target, target->pending, target->pending_pc, retval, pc);
+  assert(target->pending != -1);
+  target->pending = -1;
 
-  //assert(target->pending != -1);
-#if 0
-// Edge case with signal handling again? sysret runs twice without syscall
-  i (target->pending == -1) {
-    printf("Pending was -1 for target %p, pc=%lx\n", target, pc);
-    fflush(NULL);
-    assert(0);
-  }
-#endif
-  if (target->pending == -1) {
-    // Need to undo what we did on previous sysret since hti sis a dup
-    target->addRef();
-  }
-
-  if (pc != target->pending_pc) {
-    //fprintf(fp, "sysret of %p expected at %lx but was at %lx\n", target, target->pending_pc, pc);
-    fflush(NULL);
-    assert(0);
-  }
-
-  target->pending = -1; // TODO: how to handle with parent/childs?
-
-  //fprintf(fp, "Sysret with target %p. Original callno was %lld\n", target, target->orig_regs.rax);
+  kvm_regs new_regs;
+  assert(get_regs(cpu, &new_regs));
 
   if (target->ctr > 1) {
-    // All done with injection. Restore original registers, unless it's a fork parent
-    kvm_regs new_regs;
-    assert(get_regs(cpu, &new_regs));
-
+    //printf("SYSRET at %lx - all done, original sc (%lld) returns %lld\n", pc, target->orig_regs.rax, new_regs.rax);
+    // All done with injection. Restore original registers
     uint64_t retval = (target->force_retval) ? target->retval : new_regs.rax;
 
-    if (target->parent_ret_pending) {
-      // We're about re-execute the syscall instruction in the parent, need to be side effect free
-      // Set R14 to special (second) magic value.
-      // We'll change callno to getpid on the syscall and grab the PID then. We could alternatively do that here.
+    // Restore original R14/R15 values and decrement refcount
+    new_regs.r14 = target->orig_regs.r14;
+    new_regs.r15 = target->orig_regs.r15;
+    target->release();
 
-      // We leave R15 alone, we'll need it on the imminent syscall in the parent!
-      new_regs.r14 = R14_INJECTED_PARENT;
-      //printf("SYSRET: first parent returns, going to re-exec no-op syscall (refcount %d: maintianing)\n", target->refcount);
-
-    } else {
-      // Restore original R14/R15 values and decrement refcount
-      new_regs.r14 = target->orig_regs.r14;
-      new_regs.r15 = target->orig_regs.r15;
-
-      target->release();
-    }
     new_regs.rax = retval; // Only changes it if we had force_retval
-    assert(set_regs(cpu, &new_regs));
-
+  } else {
+    //printf("SYSRET at %lx - more to come, go back to %lx\n", pc, pc-2);
+    // We have another syscall to run! Need to go back to pc-2 and ensure we only run at the right time
+    target->at_sysret_redo_syscall(cpu, pc-2, new_regs); // Updates new_regs
   }
-  // Else We have another syscall to inject. Fortunately we've set ourselves up to return to
-  // the syscall instruction so we don't have to do anything here
 
+  assert(set_regs(cpu, &new_regs)); // Apply new_regs
 }
 
 bool Runtime::load_hyde_prog(void* cpu, std::string path) {

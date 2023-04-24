@@ -2914,25 +2914,27 @@ int kvm_cpu_exec(CPUState *cpu)
 
         case KVM_EXIT_TPR_ACCESS:
           {
+
+            // We need to know details of syscalls and info about injected
+            // sysrets. We keep PC for good measure
+            //
+            // On call we need R12-R15
+            //
+            // On ret we're only even called if it's a possible match
+            // because R14 is 0xdeadbeef.
             bool is_syscall = run->papr_hcall.args[0];
 
-           unsigned long cpu_id = run->papr_hcall.args[1]; // cpu id in 5 on syscall
-            //unsigned long asid = run->papr_hcall.args[2];
-            //unsigned long fs = run->papr_hcall.args[3];
-            unsigned long pc = run->papr_hcall.args[4];
-            // ... skip only syscall args
-            //unsigned long rsp = run->papr_hcall.args[7];
-            unsigned long r14 = run->papr_hcall.args[7];
-            unsigned long r15 = run->papr_hcall.args[8];
-
+            unsigned long pc = run->papr_hcall.args[1];
+            unsigned long r12 = run->papr_hcall.args[2];
+            unsigned long r13 = run->papr_hcall.args[3];
+            unsigned long r14 = run->papr_hcall.args[4];
+            unsigned long r15 = run->papr_hcall.args[5];
             unsigned long rax = run->papr_hcall.nr; // callno / return value
 
             if (is_syscall) {
-              unsigned long orig_rcx = run->papr_hcall.args[5];
-              unsigned long orig_r11 = run->papr_hcall.args[6];
-              on_syscall((void*)cpu, pc, rax, orig_rcx, orig_r11, r14, r15, cpu_id);
+              on_syscall((void*)cpu, pc, (int)rax, r12, r13, r14, r15);
             } else {
-              on_sysret((void*)cpu, pc, rax, r14, r15, cpu_id);
+              on_sysret((void*)cpu, pc, rax, r12, r13, r14, r15);
             }
           }
           ret = 0;

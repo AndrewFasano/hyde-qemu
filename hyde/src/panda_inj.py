@@ -17,10 +17,10 @@ import os
 # we don't care!
 
 #       Value from syscall->sysret | Value from sysret->syscall for injection
-# magic1 = 0xdeadbeef             | 0xb1ade000
-# magic2 = key                    | key^syscall_pc
-# magic3 = unused                 | key
-# magic4 = unused                 | syscall_pc
+# magic1 = 0xdeadbeef             | 0xb1ade000              KVM:R14
+# magic2 = key                    | key^syscall_pc          KVM:R15
+# magic3 = unused                 | key                     KVM:R12
+# magic4 = unused                 | syscall_pc              KVM:R13
 
 # On syscall, if we see b1ade000 in magic1, we check for a valid hash - if we have one, registers were left intact
 # and then we check if the saved syscall pc matches the pc of the current syscall instruction. If so, we're not in a signal handler - we modify magic1 to be deadbeef
@@ -331,6 +331,8 @@ class SysInject(PyPlugin):
        if m1 != MAGIC_VALUE_REPEAT:
            return None
        if m2 ^ m3 != m4:
+           print("XXX IT HAPPENDD - HASH DIVERGENCE -> IGNORING ALLEGED MAGIC") # Whoop, our newest idea saved us
+           self.panda.arch.dump_regs(cpu)
            return None
        
        return (m2, m3)
@@ -406,11 +408,14 @@ if __name__ == "__main__":
         #panda.record_cmd("whoami", recording_name="whoami", snap_name="coreutils")
 
         # Need to add cflag, otherwise it won't build with the 18.04 installed compiler, even unmodified
-        #kvm cmd = "make check SUBDIRS=. VERBOSE=yes"
+        """
+        time make check SUBDIRS=. -j$(nproc)
+        """
         #cmd = "make check CFLAGS='-Wno-error=suggest-attribute=const -Wno-error=type-limits' SUBDIRS=. VERBOSE=yes" # OOMs on my dev machine :(
-        cmd = "make check CFLAGS='-Wno-error=suggest-attribute=const -Wno-error=type-limits' SUBDIRS=. TESTS=tests/tail-2/inotify-race SUBDIRS=. VERBOSE=yes; cat tests/tail-2/inotify-race.log"
+        #cmd = "make check CFLAGS='-Wno-error=suggest-attribute=const -Wno-error=type-limits' SUBDIRS=. TESTS=tests/tail-2/inotify-race SUBDIRS=. VERBOSE=yes; cat tests/tail-2/inotify-race.log" # Skip, bkp not hit
         #cmd = "make check CFLAGS='-Wno-error=suggest-attribute=const -Wno-error=type-limits' SUBDIRS=. TESTS=tests/rm/r-root SUBDIRS=. VERBOSE=yes; cat tests/rm/r-root.log"
         #cmd = "make check CFLAGS='-Wno-error=suggest-attribute=const -Wno-error=type-limits' SUBDIRS=. VERBOSE=yes"
+        cmd = "make check CFLAGS='-Wno-error=suggest-attribute=const -Wno-error=type-limits' SUBDIRS=. TESTS=tests/misc/printf-quote SUBDIRS=. VERBOSE=yes"
 
         panda.revert_sync("coreutils3")
 

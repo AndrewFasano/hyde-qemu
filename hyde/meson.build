@@ -10,7 +10,8 @@ kvm_ss.add([files(
   'src/runtime.cpp',
   'src/runtime_instance.cpp',
   'src/qemu_api.cpp',
-), declare_dependency(compile_args: ['-Wconversion', '-Wno-error=conversion'])])
+)#, declare_dependency(compile_args: ['-Wconversion', '-Wno-error=conversion'])
+])
 
 # Setup cflags - doesn't work
 #hyde_inc = '-I' + meson.current_source_dir() + '/include'

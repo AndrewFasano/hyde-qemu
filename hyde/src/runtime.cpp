@@ -75,14 +75,15 @@ struct Data {
   }
 
   void update_regs_for_injected_syscall(kvm_regs& new_regs, uint64_t new_callno, uint64_t pc) {
+    // TODO: this would need to also support arguments
     new_regs.rax = new_callno;
-    // TODO: args?
     new_regs.rcx = pc - 2; // Re-exec current syscall
   }
 
 
-  void restore_registers(kvm_regs &new_regs) {
-    // Restore R12, R13, R14, R15 from orig_regs
+  void restore_registers_for_reinjection(kvm_regs &new_regs) {
+    // Restore R12, R13, R14, R15 from orig_regs - this is 
+    // when we hit a syscall that we've set up from a sysret
     new_regs.r12 = orig_regs.r12;
     new_regs.r13 = orig_regs.r13;
     new_regs.r14 = orig_regs.r14;
@@ -95,11 +96,6 @@ struct Data {
     orig_regs.rax = SYS_getpid;
     force_retval = true;
     retval = new_retval;
-  }
-
-  void update_regs_for_original_syscall(kvm_regs& new_regs, uint64_t pc) {
-    //new_regs.rax = orig_regs.rax; // new_regs is based on orig_regs
-    new_regs.rcx = pc;
   }
 
   void inject_syscall(void* cpu, int callno, kvm_regs& new_regs) {
@@ -180,7 +176,7 @@ bool Runtime::handle_reinjection(void* cpu, uint64_t pc, uint64_t rax, uint64_t 
 
   kvm_regs new_regs;
   assert(get_regs(cpu, &new_regs)); // Get current registers
-  target->restore_registers(new_regs); // Restore R12-R15 to original values
+  target->restore_registers_for_reinjection(new_regs); // Restore R12-R15 to original values
   target->inject_syscall(cpu, target->orig_regs.rax, new_regs); // Clobber R14/R15 with syscall->sysret magic values
 
   return true; // We're injecting here - don't fall back to the normal handler that could start a new injection
@@ -239,6 +235,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
     // Restore original R14/R15 values and decrement refcount
     new_regs.r14 = target->orig_regs.r14;
     new_regs.r15 = target->orig_regs.r15;
+    target->magic = -1;
     target->release();
 
     new_regs.rax = retval; // Only changes it if we had force_retval

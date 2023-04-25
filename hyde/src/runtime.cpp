@@ -24,129 +24,7 @@ magic3 = key                    | key                     KVM:R12
 magic4 = sysret_pc              | syscall_pc              KVM:R13
 */
 
-#define SKIP_FORK
-static uint64_t global_ctr = 0;
-static uint64_t N = (uint64_t)-1;
-
-//FILE *fp = NULL;
-
-// XXX this needs to merge with struct syscall_context from hyde_common
-struct Data {
-  int magic;
-  kvm_regs orig_regs;
-  bool parent_ret_pending;
-  bool child_call_pending;
-  bool force_retval;
-  uint64_t retval;
-  int pending;
-  int ctr;
-  hsyscall* orig_syscall;
-  coopter_t coopter;
-
-  // Initialize and orig_regs based on CPU
-  Data(void* cpu) : magic(0x12345678), orig_regs(), parent_ret_pending(false), child_call_pending(false), force_retval(false), pending(-1), ctr(0), refcount(1) {
-      assert(get_regs(cpu, &orig_regs));
-      orig_syscall = new hsyscall(orig_regs.rax);
-      uint64_t args[6];
-      for (int i = 0; i < 6; i++) {
-        args[i] = get_arg(details->orig_regs, (RegIndex)i);
-      }
-      orig_syscall->set_args(6, args);
-  }
-
-  // Create a new instance with the same orig_regs as the old - XXX drop this?
-  //Data(const Data& other) : magic(0x12345678), parent_ret_pending(false), child_call_pending(false), force_retval(false), retval(0), pending(-1), ctr(0), refcount(1) {
-  //    std::memcpy(&orig_regs, &other.orig_regs, sizeof(kvm_regs));
-  //}
-
-  // Helper methods
-  void addRef() {
-    refcount++;
-  }
-
-  void release() {
-    refcount--;
-    if (refcount == 0) {
-        magic = -1;
-        //fprintf(fp, "Freeing %p\n", this);
-        delete this;
-    }
-  }
-
-/*
-  bool is_fork(int callno) const {
-    return callno == SYS_fork || callno == SYS_vfork;
-  }
-
-  void handle_fork(kvm_regs& new_regs, uint64_t pc) {
-    new_regs.rcx = pc - 2; // Re-exec current syscall
-    addRef();
-    parent_ret_pending = true;
-    child_call_pending = true;
-  }
-
-  void update_regs_for_nop(uint64_t pc, uint64_t new_retval) {
-    orig_regs.rax = retval;
-    orig_regs.rcx = pc;
-    orig_regs.rax = SYS_getpid;
-    force_retval = true;
-    retval = new_retval;
-  }
-
-  void update_regs_for_injected_syscall(kvm_regs& new_regs, uint64_t new_callno, uint64_t pc) {
-    // TODO: this would need to also support arguments
-    new_regs.rax = new_callno;
-    new_regs.rcx = pc - 2; // Re-exec current syscall
-  }
-*/
-
-  void restore_registers_for_reinjection(kvm_regs &new_regs) {
-    // Restore R12, R13, R14, R15 from orig_regs - this is 
-    // when we hit a syscall that we've set up from a sysret
-    new_regs.r12 = orig_regs.r12;
-    new_regs.r13 = orig_regs.r13;
-    new_regs.r14 = orig_regs.r14;
-    new_regs.r15 = orig_regs.r15;
-  }
-
-  void inject_syscall(void* cpu, int callno, kvm_regs& new_regs) {
-    // At a syscall: set magic values so we can detect and clenaup on return
-    //fprintf(fp, "Injecting syscall %d at pc %llx. Object is at %p\n", callno, new_regs.rip, this);
-    new_regs.rax = (uint64_t)callno;
-    new_regs.r12 = reinterpret_cast<uint64_t>(this);
-    new_regs.r13 = new_regs.rcx; // next instruction? Uhh
-    new_regs.r14 = MAGIC_VALUE;
-    new_regs.r15 = new_regs.r12 ^ new_regs.r13;
-
-    pending = (int)new_regs.rax; // Callno, won't overflow an int
-    ctr++;
-
-    assert(set_regs(cpu, &new_regs));
-  }
-
-  void at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs) {
-    // In a sysert we want to go back to the syscall insn at sc_pc.
-    //fprintf(fp, "In sysret, we want to want to re-execute syscall insn at %lx, object is at %p\n", sc_pc, this);
-
-    new_regs.r12 = reinterpret_cast<uint64_t>(this);
-    new_regs.r13 = sc_pc;
-    new_regs.r14 = MAGIC_VALUE_REPEAT;
-    new_regs.r15 = new_regs.r12 ^ new_regs.r13;
-
-    // And change our PC to sc_pc as well via RCX. This works, we used it previously:
-    // https://github.com/AndrewFasano/hhyde-qemu/blob/6b15778ff2e2f56e3b3311f2a4a3b608026e4ba5/accel/kvm/hyde.cpp#L539
-    new_regs.rip = sc_pc;
-  }
-
-private:
-  int refcount;
-};
-
-
 Runtime::LoadedPlugin::~LoadedPlugin() = default;
-
-// On syscall stick a host ptr in r15
-// On sysret use host ptr to cleanup and examine register delta
 
 bool get_magic_values(uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15, uint64_t *out_key, uint64_t *out_pc) {
   if (r14 != MAGIC_VALUE_REPEAT) return false;
@@ -156,80 +34,61 @@ bool get_magic_values(uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15, ui
     return false;
   }
 
-
-  //printf("Valid magic, out_key is %lx, out_pc is %lx\n", r12, r13);
   *out_key = r12;
   *out_pc = r13;
   return true;
 }
 
-bool Runtime::handle_reinjection(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
+syscall_context* Runtime::get_reinject_ctx(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
   uint64_t out_key;
   uint64_t out_pc;
 
   if (!get_magic_values(r12, r13, r14, r15, &out_key, &out_pc)) {
     // No magic present
-    return false;
+    return NULL;
   }
 
   if (out_pc != pc) {
-    //fprintf(fp, "XXX blocking moved key - key specifies %lx but we're at %lx. Not using target %lx\n", out_pc, pc, out_key);
     // It's valid, but not for this PC - bail, we're probably in a syscall handler
-    return false;
+    return NULL;
   }
 
   // Alright, we want to inject a syscall here based off our out_key
-  Data* target = reinterpret_cast<Data*>(out_key);
+  return reinterpret_cast<syscall_context*>(out_key);
 
-  // Sanity checks - it's valid and not waiting on a syscall
-  assert(target->magic == 0x12345678);
-  assert(target->pending == -1);
-
-  //fprintf(fp, "At syscall after injection with target %p, getpid returned %ld, now we're going to set up original syscall to run %lld\n", target, rax, target->orig_regs.rax);
-
-  target->ctr++;
-
-  kvm_regs new_regs;
-  assert(get_regs(cpu, &new_regs)); // Get current registers
-  target->restore_registers_for_reinjection(new_regs); // Restore R12-R15 to original values
-  target->inject_syscall(cpu, target->orig_regs.rax, new_regs); // Clobber R14/R15 with syscall->sysret magic values
-
-  return true; // We're injecting here - don't fall back to the normal handler that could start a new injection
 }
 
 void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
-  Data* target = nullptr;
   int callno = (int)rax;
 
-  if (callno ==  SYS_rt_sigreturn ||
+  if (callno == SYS_rt_sigreturn ||
       callno == SYS_clone || callno == SYS_clone3 ||
       callno == SYS_exit || callno == SYS_exit_group ||
       callno == SYS_execve || callno == SYS_execveat ||
-      callno == SYS_fork || callno == SYS_vfork) { /* These last two should be changed if we try to disable SKIP_FORK */
+      callno == SYS_fork || callno == SYS_vfork) { [[unlikely]] /* These last two should be changed if we try to disable SKIP_FORK */
     return;
   }
 
   uint64_t pc = next_pc-2;
 
-  if (!handle_reinjection(cpu, pc, rax, r12, r13, r14, r15)) {
-    // If we had to advance a coroutine and all that we've already done it.
-    // Instead, we're here so this is our first chance to inject on this syscall.
+  // If we've already coopted this process, get a handle to our target state
+  syscall_context* target = get_reinject_ctx(cpu, pc, rax, r12, r13, r14, r15);
 
-    // Find a coopter for this sycall if one is registered. -1 beats anything else
+  // Otherwise, it's just a normal guest syscall. If we have any registered
+  // create_coopter_t functions, let them co-opt. Otherwise we leave it alone
+  if (target == nullptr) {
     create_coopter_t *f = NULL;
     if (syscall_handlers_.find(-1) != syscall_handlers_.end()) {
-      // We have a catchall, pretend callno is -1 so we use it
+      // If we have a catchall, set callno to -1 so we select it
       callno = -1;
     }
-
     if (syscall_handlers_.find(callno) != syscall_handlers_.end()) {
-      // Get & store original registers before we run the coopter's first iteration
       f = &syscall_handlers_[callno];
     }
 
-    if (f == NULL) return; // No coopter for this syscall
+    if (f == NULL) return; // No coopter for this syscall - all done
 
-    std::string name; // Which hyde program is this for?A
+    std::string name; // Which hyde program is this for?
     // Look through coopters_map and find the key that has this callno
     for (auto it = coopters_map_.begin(); it != coopters_map_.end(); it++) {
       // does this hyde program's coopted syscall vector contain callno?
@@ -239,74 +98,142 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
       }
     }
 
-    target = new Data(cpu);
-    //fprintf(fp, "SYSCALL at %lx: new injection with target at %p, \n", pc, target);
+    target = new syscall_context(cpu);
+    //printf("SYSCALL at %lx: new injection with target at %p, \n", pc, target);
 
-    // Create original syscall using info from regs
+    target->pImpl->set_coopter(*f);
+    target->pImpl->set_name(name);
+
+    // Track that we have an active coopter running - this is important for safely cleaning up if a program unloads
     coopted_procs_.insert(target);
+  }
 
-    target->coopter = (*f)(details).h_;
-    details->name = name;
+  // Now we have to have a target, new or old. First make sure it's valid (sanity checks for debugging)
+  assert(target->pImpl->magic_ == 0x12345678);
+  target->pImpl->ctr_++; // DEBUGGING increment each time we inject
 
+  // Now we need to actually inject our syscall from the coopter, it's in promise.value_
+  auto promise = target->pImpl->get_coopter_promise();
 
+  if (target->pImpl->is_coopter_done()) [[unlikely]] {
+    // In the syscall, coopter can't be done - would happen if a user cooped and yielded nothing. Should use SDK instead
+    std::cerr << "USER ERROR: Coopter injects no syscalls, not even original " << std::endl;
+    assert(0);
+    return;
+  }
 
+  //printf("INJECT: with ctr=%d\n", target->pImpl->ctr_);
+  //promise.value_.pprint();
+
+  // Inject the provided syscall!
+  if (!target->pImpl->inject_syscall(cpu, promise.value_)) {
+    // Returns false if we can't track it (noreturn)
+    // In that case we need to cleanup now - note coopter will never advance here
+    // Kinda makes sense, if you yield exit, what would you expect?
+    coopted_procs_.erase(target);
+    delete target;
   }
 }
 
 void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
   assert(r14 == MAGIC_VALUE && "VMM incorrectly triggered on_sysret");
 
-  if ((r12 ^ r13) != r15) {
-    // Yep, this happens sometimes when N>1
-    //printf("Woah - on sysret have unexpected magic:\n");
-    //printf("r12: %lx\n", r12);
-    //printf("r13: %lx\n", r13);
-    //printf("r15: %lx vs exprected %lx \n", r15, r12 ^ r13);
-    //printf("XXX IGNORING???\n");
+  if ((r12 ^ r13) != r15 || r13 != pc) [[unlikely]] {
+    // Not ours - ignore
     return;
   }
-
-  if (r13 != pc) {
-    printf("XXX On sysret expected pc %lx but have %lx - ignoring (?) \n", r13, pc);
-    return;
-  }
-
   //fprintf(fp, "SYSRET with target 0x%lx\n", r12);
 
-  Data* target = (Data*)r12;
-  //if (target->magic != 0x12345678) {
-  //  fprintf(fp, "FATAL bad magic for target at %p\n", target);
-  //  fflush(fp);
-  //}
-  assert(target->magic == 0x12345678);
+  syscall_context* target = (syscall_context*)r12;
+  assert(target->pImpl->magic_ == 0x12345678);
+  //printf("SYSRET with target 0x%lx, ctr %d\n", r12, target->pImpl->ctr_);
+  target->pImpl->advance_coopter();
 
-  assert(target->pending != -1);
-  target->pending = -1;
-
+  // XXX: Do we need new_regs at all? Can we just use orig?
   kvm_regs new_regs;
   assert(get_regs(cpu, &new_regs));
+  // In the case of !done, we clobber new_regs R12-R15, leaving the rest alone (inc RAX)
+  // In the case of done, we clobbere new_regs R12-R15, leaving the rest alone except RAX on cusotm
+  // Would orig_regs !{R12-R15} ever change? Probably not?
 
-  if (target->ctr > 1) {
-    //fprintf(fp, "SYSRET at %lx - all done, original sc (%lld) returns %lld, let's clean up target %p\n", pc, target->orig_regs.rax, new_regs.rax, target);
-    // All done with injection. Restore original registers
-    uint64_t retval = (target->force_retval) ? target->retval : new_regs.rax;
 
-    // Restore original R12-15 values and decrement refcount
-    new_regs.r12 = target->orig_regs.r12;
-    new_regs.r13 = target->orig_regs.r13;
-    new_regs.r14 = target->orig_regs.r14;
-    new_regs.r15 = target->orig_regs.r15;
-    target->magic = -1;
-    target->release();
-
-    new_regs.rax = retval; // Only changes it if we had force_retval
-  } else {
-    //fprintf(fp, "SYSRET at %lx - injected syscall returns %llx. Target is at %p\n", pc, new_regs.rax, target);
+  if (!target->pImpl->is_coopter_done()) {
     // We have another syscall to run! Need to go back to pc-2 and ensure we only run at the right time
-    target->at_sysret_redo_syscall(cpu, pc-2, new_regs); // Updates new_regs
+    //printf("Bring it back now y'all - %p needs rexec of %lx\n", target, pc-2);
+    target->pImpl->at_sysret_redo_syscall(cpu, pc-2, new_regs);
+    return; // Updated registers
   }
 
+  auto promise = target->pImpl->get_coopter_promise();
+  ExitStatus result = promise.retval;
+
+  //fprintf(fp, "SYSRET at %lx - all done, original sc (%lld) returns %lld, let's clean up target %p\n", pc, target->orig_regs.rax, new_regs.rax, target);
+  // All done with injection. Restore original registers
+  uint64_t new_retval = (target->pImpl->has_custom_retval()) ? target->pImpl->get_custom_retval() : new_regs.rax;
+  uint64_t retaddr = target->pImpl->has_custom_return() ? target->pImpl->get_custom_return() : pc; // XXX pc or new_regs.rip?
+
+  // Restore original R12-15 values and decrement refcount
+  target->pImpl->restore_magic_regs(cpu, new_regs);
+  target->pImpl->magic_ = -1;
+  std::string name = target->pImpl->get_name();
+  delete target; // XXX if we try handling forks this will need to be more
+
+  new_regs.rax = new_retval; // Only changes it if we had force_retval
+  new_regs.rip = retaddr; // Only changes it if we had custom_return
+
   assert(set_regs(cpu, &new_regs)); // Apply new_regs
+
+  // Based on result, update state for the whole hyde program
+  switch (result) {
+    case ExitStatus::FATAL:
+      printf("[HyDE] Fatal error in %s\n", name.c_str());
+      [[fallthrough]];
+    case ExitStatus::FINISHED:
+      //if (!pending_exits.contains(name)) {
+      //  printf("[HyDE] Unloading %s on cpu %d\n", name.c_str(), 0);
+      //  //try_unload_coopter(details->name, cpu, 0); // XXX multicore guests, need to do for all CPUs?
+      //  pending_exits.insert(name);
+      //}
+      break;
+
+    case ExitStatus::SINGLE_FAILURE:
+      printf("[HyDE] Warning %s experienced a non-fatal failure\n", name.c_str());
+      break;
+
+    case ExitStatus::SUCCESS:
+      // Nothing to do
+      break;
+  }
+
+    // For each pending exit (i.e., coopter that is done), check if any of the injections we're tracking are it
+#if 0
+  for (auto it = pending_exits.begin(); it != pending_exits.end(); ) {
+    // Check if any coopters are still active
+    bool active = false;
+    for (const auto &kv : coopted_procs) {
+      if (kv->name == *it) {
+        active = true;
+        break;
+      }
+    }
+
+    if (!active) {
+      if (try_unload_coopter(*it, cpu, 0)) { // Safe to unload now
+        printf("[HyDE] Unloaded %s\n", it->c_str());
+        //it = std::erase_if(pending_exits, [&](const auto& name) { return name == *it; });
+        //it = std::remove_if(pending_exits.begin(), pending_exits.end(), [&](const auto& name) { return name == *it; });
+        it = pending_exits.erase(it);
+        continue;
+      } else {
+        printf("ERROR erasing %s\n", it->c_str());
+      }
+    }
+    ++it;
+  }
+#endif
+
+
+
 }
 
 bool Runtime::load_hyde_prog(std::string path) {
@@ -357,13 +284,8 @@ bool Runtime::load_hyde_prog(std::string path) {
 }
 
 bool Runtime::unload_all(void* cpu) {
-  // Called at qemu shutdown - good place to log results / call uninit methods on loaded programs
-  //std::cerr << "Finished after " << global_ctr << " syscalls (injected every " << N << ")" << std::endl;
-
-  // TODO: for each program, call unload
-  std::cerr << "TODO cleanly unload all hyde prgraoms" << std::endl;
-  //disable_syscall_introspection(cpu, idx);
-
+  // Called at qemu shutdown. Core hyde platform could log something here
+  // HyDE program destructors will run independently from this at shutdown
   return true;
 }
 

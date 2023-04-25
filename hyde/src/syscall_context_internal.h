@@ -6,6 +6,15 @@
 #include <linux/kvm.h>
 #include <cassert>
 
+#define IS_NORETURN_SC(x)(x == __NR_execve || \
+                          x == __NR_execveat || \
+                          x == __NR_exit || \
+                          x == __NR_exit_group || \
+                          x == __NR_rt_sigreturn)
+
+#define IS_CLONE_SC(x)(x == __NR_clone || x == __NR_clone3)
+#define IS_FORK_SC(x)(x == __NR_fork || x == __NR_vfork)
+
 // Pretty print kvm_regs
 static inline void pretty_print_regs(kvm_regs regs) {
   printf("\trax: %llx, rbx: %llx, rcx: %llx, rdx: %llx\n", regs.rax, regs.rbx, regs.rcx, regs.rdx);
@@ -46,8 +55,8 @@ static inline void pretty_print_diff_regs(kvm_regs regs1, kvm_regs regs2) {
 
 class syscall_context_impl {
 public:
-  syscall_context_impl(void* cpu, syscall_context *ctx, uint64_t orig_rcx, uint64_t orig_r11);
-  syscall_context_impl(const syscall_context_impl& other, void* cpu, syscall_context *ctx);
+  syscall_context_impl(void* cpu, syscall_context *ctx);
+  //syscall_context_impl(const syscall_context_impl& other, void* cpu, syscall_context *ctx);
   ~syscall_context_impl();
 
 
@@ -64,26 +73,6 @@ public:
   std::string get_name() {
     return name_;
   }
-
-  #if 0
-  void set_child() {
-    parent_ = false;
-    child_ = true;
-  }
-
-  bool is_child() {
-    return child_;
-  }
-
-  void set_parent() {
-    child_ = false;
-    parent_ = true;
-  }
-
-  bool is_parent() {
-    return parent_;
-  }
-  #endif
 
   void advance_coopter() {
     assert(coopter_ != nullptr);
@@ -119,12 +108,20 @@ public:
   void set_custom_retval(uint64_t retval) {
     /* Pass a different return value back to process after this injected SC
      * only meaningful for the last syscall in a sequence */
-    assert(0);
     has_custom_retval_ = true;
     custom_retval_ = retval;
   }
 
-  bool set_syscall(void* cpu, hsyscall sc, bool nomagic);
+  /* At a syscall instruction, set hsyscall sc to cpu and
+    be sure we catch it on cleanup */
+ bool inject_syscall(void* cpu, hsyscall sc);
+
+  /* We're reinjecting - restore original R12-R15 before
+    XXX this might be pointless  */
+  void restore_magic_regs(void* cpu, kvm_regs &new_regs);
+
+  /* At a sysret instruction, set new_regs up to rerun the syscall at sc_pc */
+  void at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs);
 
   bool has_custom_return() {
     return has_custom_return_;
@@ -147,32 +144,8 @@ public:
   bool translate_gva(uint64_t gva, uint64_t* gpa);
   bool gpa_to_hva(uint64_t gpa, uint64_t* hva);
 
-  void* get_cpu() {
-    return cpu_;
-  }
-
-  void set_child_coopter(create_coopter_t f);
-
-  bool has_child_coopter() {
-    return child_coopter_ != nullptr;
-  }
-
-  void set_orig(uint64_t orig_rcx, uint64_t orig_r11) {
-    orig_rcx_ = orig_rcx;
-    orig_r11_ = orig_r11;
-  }
-
-  uint64_t get_orig_r11() {
-    return orig_r11_;
-  }
-
-  uint64_t get_orig_rcx() {
-    return orig_rcx_;
-  }
-
   int magic_; // XXX DEBUGGING
   int ctr_; // XXX DEBUGGING
-  int last_sc_; // XXX DEBUGGING
 
 private:
   syscall_context *syscall_context_;
@@ -189,23 +162,12 @@ private:
 
   uint64_t last_sc_retval_;
 
-  // If set, return to a customa ddress post-sc
+  // If set, return to a custom address post-sc
   bool has_custom_return_;
   uint64_t custom_return_;
 
-  create_coopter_t child_coopter_;
+  void* cpu_; // XXX TODO: We probably need a different cpu object when we swap CPUs?
+              // How can we internally update this as we go?
 
-  //bool child_; // True if this is a child process after a fork/clone
-  //bool parent_; // True if this is a parent process after a fork/clone
-  //uint64_t last_sc_retval; // Return value to be set after simulating a system call
-
-  void* cpu_; // Opaque pointer we use internally
   std::string name_; // Name (full path) of the hyde program
-
-  uint64_t orig_rcx_; // Next PC?
-  uint64_t orig_r11_; // Pre-syscall rflags
-
-#if 0
-  uint64_t asid;
-#endif
 };

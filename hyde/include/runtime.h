@@ -55,7 +55,7 @@ private:
     void* handle;
   };
 
-  bool handle_reinjection(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
+  syscall_context* get_reinject_ctx(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
 
 
   void register_plugin_handlers(Plugin* plugin);

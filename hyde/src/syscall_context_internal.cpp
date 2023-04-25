@@ -3,6 +3,20 @@
 #include "qemu_api.h"
 #include <linux/kvm.h>
 #include <cassert>
+#include <sys/syscall.h>
+
+// Set on syscall, looked for on sysret
+#define MAGIC_VALUE 0xdeadbeef
+
+// Set on sysret, looked for on syscall - only when repeating
+#define MAGIC_VALUE_REPEAT 0xb1ade001
+/*
+        syscall->ret              sysret->syscall
+magic1 = 0xdeadbeef             | 0xb1ade000              KVM:R14
+magic2 = key^sysret_pc          | key^syscall_pc          KVM:R15
+magic3 = key                    | key                     KVM:R12
+magic4 = sysret_pc              | syscall_pc              KVM:R13
+*/
 
 #define REG_ACCESS(reg, idx) \
     ((idx == RegIndex::CALLNO || idx == RegIndex::RET) ? (reg).rax : \
@@ -21,22 +35,9 @@
 #define __set_arg(regs, idx, val) REG_ACCESS(regs, idx) = (val)
 
 
-
-#define IS_NORETURN_SC(x)(x == __NR_execve || \
-                          x == __NR_execveat || \
-                          x == __NR_exit || \
-                          x == __NR_exit_group || \
-                          x == __NR_rt_sigreturn)
-
-#define IS_CLONE_SC(x)(x == __NR_clone || x == __NR_clone3)
-#define IS_FORK_SC(x)(x == __NR_fork || x == __NR_vfork)
-
-
-syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx, uint64_t orig_rcx, uint64_t orig_r11) :
-  //last_sc_retval(0),
+syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
   magic_(0x12345678),
   ctr_(0),
-  last_sc_(0),
   syscall_context_(ctx),
   coopter_(nullptr),
   has_custom_retval_(false),
@@ -46,7 +47,7 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx, uint
   // At initialization, we read original registers
   assert(cpu != nullptr);
 
-  if (!set_orig_regs(cpu)) {
+  if (!get_regs(cpu, &orig_regs_)) {
     printf("Failed to get orig registers with cpu at %p\n", cpu);
     assert(0);
   }
@@ -56,16 +57,14 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx, uint
   // In our orig_regs, we want to store the original values. Does it matter? Don't think so?
 
   // PC is now in RCX
-  orig_regs_.rip = orig_regs_.rcx; // Next instruction after syscall (maybe not +2?)
+  //orig_regs_.rip = orig_regs_.rcx; // Next instruction after syscall (maybe not +2?)
 
   // Rflags in r11
   orig_regs_.rflags = (orig_regs_.r11 & 0x3c7fd7) & 0x2;
 
   // And rcx, r11 are clobbered for good. Be explicit about it
-  orig_regs_.rcx = 0x41424344;
-  orig_regs_.r11 = 0x61626364;
-
-
+  //orig_regs_.rcx = 0x41424344;
+  //orig_regs_.r11 = 0x61626364;
 
   // And let's also hold nto the original 
 
@@ -79,32 +78,6 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx, uint
   orig_syscall_->set_args(6, args);
 }
 
-// Copy an existing syscall_ctx into a new one - e.g., after a fork
-syscall_context_impl::syscall_context_impl(const syscall_context_impl& other, void* cpu, syscall_context* ctx) :
-  magic_(0x12345678),
-  ctr_(0),
-  last_sc_(0),
-  syscall_context_(ctx),
-  orig_syscall_(new hsyscall(*other.orig_syscall_)),
-  coopter_(nullptr),
-  has_custom_retval_(other.has_custom_retval_),
-  custom_retval_(other.custom_retval_),
-  has_custom_return_(other.has_custom_return_),
-  custom_return_(other.custom_return_),
-  cpu_(cpu)
-{
-  assert(0 && "Unused?");
-  // XXX can't duplicate coopter: instead we launch child coopter
-  assert(child_coopter_ != nullptr);
-  coopter_ = (child_coopter_)(syscall_context_).h_;
-  child_coopter_ = nullptr;
-}
-
-void syscall_context_impl::set_child_coopter(create_coopter_t f) {
-  child_coopter_ = f;
-}
-
-
 syscall_context_impl::~syscall_context_impl() {
   delete orig_syscall_;
   if (coopter_ != nullptr) coopter_.destroy();
@@ -114,53 +87,71 @@ uint64_t syscall_context_impl::get_arg(RegIndex i) const {
   return __get_arg(orig_regs_, i);
 }
 
-bool syscall_context_impl::set_syscall(void* cpu, hsyscall sc, bool nomagic) {
-  // Returns true IFF we set the magic r14/r15 values
-  // and therefore need to catch on return and cleanup
-
+bool syscall_context_impl::inject_syscall(void* cpu, hsyscall sc) {
+  cpu_ = cpu;
   kvm_regs r = orig_regs_;
-  __set_arg(r, RegIndex::CALLNO, sc.callno);
+
+  // How do current registers compare to original?
+
+// ORIG rcx, R11 are junk. Orig RCX is in RIP
+// ORIG rip is r2.rcx
+
+  //kvm_regs r2;
+  //assert(get_regs(cpu, &r2));
+  //pretty_print_diff_regs(r, r2);
 
   // TODO: we should support stack-based args too, but might need to inject to page in stack
+  __set_arg(r, RegIndex::CALLNO, sc.callno);
   for (size_t i = 0; i < sc.nargs; i++) {
     uint64_t value = sc.args[i].is_ptr ? sc.args[i].guest_ptr : sc.args[i].value;
     __set_arg(r, (RegIndex)i, value);
   }
 
-  bool set_magic = false;
+  // XXX: Can we safely inject into either of these - should be possible
+  // with some specially-crafted custom return addresses/state for children
+  assert(!IS_CLONE_SC(sc.callno) && !IS_FORK_SC(sc.callno));
 
-  // Unless it's a noreturn or a notrack, we should inject magic values
-  // XXX DEBUG ONLY - not injecting into forks?
-  if (!IS_NORETURN_SC(sc.callno) && !IS_CLONE_SC(sc.callno) && !IS_FORK_SC(sc.callno) && \
-    !nomagic /* XXX DEBUGGING*/
-    ) /*[[likely]]*/ {
-      // < 100 BROKE
-      // < 50 seems to work?
-      // < 57: hangs?
-
-    r.r14 = R14_INJECTED;
-    r.r15 = (uint64_t)syscall_context_;
-    set_magic = true;
+  // If this syscall will return, we inject into R12-R15 and cleanup on return
+  // Otherwise we just inject this syscall and can't get the results
+  bool set_magic = !IS_NORETURN_SC(sc.callno);
+  if (set_magic) {
+    r.r12 = reinterpret_cast<uint64_t>(syscall_context_);
+    //r.r13 = r.rip; // XXX on construct we moved rcx into our rip since that's what it is
+    r.r13 = r.rcx;
+    r.r14 = MAGIC_VALUE;
+    r.r15 = r.r12 ^ r.r13;
   }
 
   assert(set_regs(cpu, &r));
-
-  //printf("Setting registers to:\n");
-  //pretty_print_regs(r);
-
-  // return true if we clobbered r14/r15
   return set_magic;
 }
 
-bool syscall_context_impl::set_orig_regs(void* cpu) {
-    // Use an IOCTL to read the registers from the guest CPU
-    // and store in this context
-    bool rv = get_regs(cpu, &orig_regs_);
-    if (!rv) return false;
+  void syscall_context_impl::restore_magic_regs(void* cpu, kvm_regs &new_regs) {
+    // Restore R12, R13, R14, R15 from orig_regs - this is 
+    // when we hit a syscall that we've set up from a sysret
+    cpu_ = cpu;
+    new_regs.r12 = orig_regs_.r12;
+    new_regs.r13 = orig_regs_.r13;
+    new_regs.r14 = orig_regs_.r14;
+    new_regs.r15 = orig_regs_.r15;
+  }
 
-    assert(orig_regs_.r14 != R14_INJECTED); // We should never have our maigc value in the original regs - we'd be clobbering ourself and lose something
 
-    return rv;
+void syscall_context_impl::at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs) {
+  // In a sysert we want to go back to the syscall insn at sc_pc.
+  //fprintf(fp, "In sysret, we want to want to re-execute syscall insn at %lx, object is at %p\n", sc_pc, this);
+
+  cpu_ = cpu;
+  new_regs.r12 = reinterpret_cast<uint64_t>(syscall_context_);
+  new_regs.r13 = sc_pc;
+  new_regs.r14 = MAGIC_VALUE_REPEAT;
+  new_regs.r15 = new_regs.r12 ^ new_regs.r13;
+
+  // And change our PC to sc_pc as well via RCX. This works, we used it previously:
+  // https://github.com/AndrewFasano/hhyde-qemu/blob/6b15778ff2e2f56e3b3311f2a4a3b608026e4ba5/accel/kvm/hyde.cpp#L539
+  new_regs.rip = sc_pc;
+
+  assert(set_regs(cpu, &new_regs));
 }
 
 bool syscall_context_impl::translate_gva(uint64_t gva, uint64_t* gpa) {

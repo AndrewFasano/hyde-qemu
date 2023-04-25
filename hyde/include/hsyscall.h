@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdio.h>
 
 struct hsyscall_arg {
   uint64_t value; // host_pointer OR constant
@@ -63,5 +64,13 @@ struct hsyscall {
       args[i] = hsyscall_arg(new_args[i]);
     }
     nargs = n;
+  }
+
+  void pprint() {
+    printf("hsyscall: callno=%lu(", callno);
+    for (unsigned int i = 0; i < nargs; i++) {
+      printf("%lx, ", args[i].is_ptr ? args[i].guest_ptr : args[i].value);
+    }
+    puts(")");
   }
 };

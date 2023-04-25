@@ -15,8 +15,13 @@ class SyscallCtx {
 public:
     SyscallCtx(void* cpu);
 
-    hsyscall* get_orig_syscall() const;
-    uint64_t get_arg(RegIndex i) const; /* Get arg from syscall */
+    hsyscall* get_orig_syscall() const; /* Get orig */
+
+    //uint64_t get_arg(RegIndex i) const; /* Get arg from orig */
+    //void set_arg(RegIndex i, uint64_t val) const; /* Set arg in orig */
+
+    uint64_t get_arg(int i) const; /* Get arg from orig_syscall */
+    void set_arg(int i, uint64_t val) const; /* Set arg in orig_syscall */
 
     uint64_t get_result() const; /* Set result */
 
@@ -36,40 +41,3 @@ private:
     // Unique pointer to the implementation
     std::unique_ptr<SyscallCtx_impl> pImpl;
 };
-
-#if 0
-
-/* This structure stores details about a given process that we are co-opting.
- * It contains a pointer to the coroutine that is simulating the process's execution.
- * It also contains a pointer to the original system call that the process was executing.
- * Finally, it contains a pointer to the original registers that the process was executing.
-*/
-struct SyscallCtx {
-
-  //std::function<void(_SyscallCtx*, void*, unsigned long, unsigned long, unsigned long)> *on_ret; // Unused
-
-  SyscallCtx(void *cpu, uint64_t asid) :
-    coopter(nullptr),
-    name(""),
-    cpu(cpu),
-    last_sc_retval(0),
-    child(false),
-    asid(asid),
-    orig_rcx(0),
-    orig_r11(0),
-    use_orig_regs(false),
-    custom_return(0) {
-
-        assert(kvm_vcpu_ioctl(cpu, KVM_GET_REGS, &orig_regs) == 0);
-        orig_syscall = new hsyscall(get_arg(RegIndex::CALLNO));
-        uint64_t args[6];
-        for (int i = 0; i < 6; i++) {
-            args[i] = details.get_arg((RegIndex)i);
-        }
-        orig_syscall->set_args(6, args);
-    };
-
-  //void setCoopter(coopter_t c) { coopter = c; }
-  //coopter_t getCoopter() const { return coopter; }
-};
-#endif

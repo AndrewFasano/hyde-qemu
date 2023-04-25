@@ -146,7 +146,9 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
 
   SyscallCtx* target = (SyscallCtx*)r12;
   assert(target->pImpl->magic_ == 0x12345678);
-  //printf("SYSRET with target 0x%lx, ctr %d\n", r12, target->pImpl->ctr_);
+
+  // Provide retval and advance coroutine
+  target->pImpl->set_last_rv(retval);
   target->pImpl->advance_coopter();
 
   // XXX: Do we need new_regs at all? Can we just use orig?

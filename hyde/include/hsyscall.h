@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <cassert>
 
 struct hsyscall_arg {
   uint64_t value; // host_pointer OR constant
@@ -64,6 +65,28 @@ struct hsyscall {
       args[i] = hsyscall_arg(new_args[i]);
     }
     nargs = n;
+  }
+
+ uint64_t get_arg(unsigned int i) {
+    assert(i < nargs && i < 6);
+    // Always return host-view?
+    //return args[i].is_ptr ? args[i].guest_ptr : args[i].value;
+    return args[i].value;
+  }
+
+  void set_arg(unsigned int i, uint64_t value) {
+    assert(i < 6);
+    if (i >= 6) {
+      printf("Invalid arg index %u\n", i);
+      return;
+    }
+
+    if (i > nargs) {
+      // Bad design for if you have 1 arg then set the 6th - undefined in the middle
+      nargs = i;
+    }
+
+    args[i] = hsyscall_arg(value);
   }
 
   void pprint() {

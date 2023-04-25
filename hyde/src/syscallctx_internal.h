@@ -59,7 +59,14 @@ public:
   ~SyscallCtx_impl();
 
 
-  uint64_t get_arg(RegIndex i) const;
+  /* Get an arg from the original syscall*/
+  uint64_t get_arg(int i) const;
+
+  // Set an arg in the original syscall */
+  void set_arg(int i, uint64_t new_val) const;
+
+  /* Get the original syscall. May have been modified by calls to set_arg */
+  hsyscall* get_orig_syscall() { return orig_syscall_;}
 
   void set_coopter(create_coopter_t f) {
     coopter_ = (f)(SyscallCtx_).h_;
@@ -82,8 +89,6 @@ public:
     assert(coopter_ != nullptr);
     return coopter_.promise();
   }
-
-  hsyscall* get_orig_syscall() { return orig_syscall_;}
 
   bool is_coopter_done() { return coopter_.done(); }
 
@@ -147,11 +152,16 @@ public:
   int ctr_; // XXX DEBUGGING
 
 private:
+  /* Get an arg from the original register state*/
+  uint64_t get_arg_(RegIndex i) const;
+
+
   SyscallCtx *SyscallCtx_;
 
-  struct kvm_regs orig_regs_; // The original registers when we started simulating the guest process
-  bool set_orig_regs(void* cpu);
+  // The original registers when we started coopting guest process
+  struct kvm_regs orig_regs_;
 
+  // orig syscall may be modified with calls to set_arg
   hsyscall *orig_syscall_; // The original system call that was about to run in the target process
   coopter_t coopter_; // The coroutine that has taken over the guest process
 

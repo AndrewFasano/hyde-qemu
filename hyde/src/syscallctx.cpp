@@ -11,8 +11,13 @@ SyscallCtx::SyscallCtx(void* cpu)
 
 SyscallCtx::~SyscallCtx() = default;
 
-uint64_t SyscallCtx::get_arg(RegIndex i) const {
+// GET and SET args in the hsyscall object
+uint64_t SyscallCtx::get_arg(int i) const {
   return pImpl->get_arg(i);
+}
+
+void SyscallCtx::set_arg(int i, uint64_t new_val) const {
+  pImpl->set_arg(i, new_val);
 }
 
 uint64_t SyscallCtx::get_result() const {

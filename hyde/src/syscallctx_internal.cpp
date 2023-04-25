@@ -73,7 +73,7 @@ SyscallCtx_impl::SyscallCtx_impl(void* cpu, SyscallCtx* ctx) :
   orig_syscall_ = new hsyscall(__get_arg(orig_regs_, RegIndex::CALLNO));
   uint64_t args[6];
   for (int i = 0; i < 6; i++) {
-    args[i] = get_arg((RegIndex)i);
+    args[i] = get_arg_((RegIndex)i);
   }
   orig_syscall_->set_args(6, args);
 }
@@ -83,8 +83,21 @@ SyscallCtx_impl::~SyscallCtx_impl() {
   if (coopter_ != nullptr) coopter_.destroy();
 }
 
-uint64_t SyscallCtx_impl::get_arg(RegIndex i) const {
-  return __get_arg(orig_regs_, i);
+uint64_t SyscallCtx_impl::get_arg(int i) const {
+  //return __get_arg(orig_regs_, i); // RegIndex
+  return orig_syscall_->get_arg(i);
+}
+
+uint64_t SyscallCtx_impl::get_arg_(RegIndex i) const {
+  return __get_arg(orig_regs_, i); // RegIndex
+}
+
+void SyscallCtx_impl::set_arg(int i, uint64_t val) const {
+  // XXX: Do we update orig_regs or do we update orig_syscall?
+  // Let's update orig_syscall
+  //__set_arg(orig_regs_, i, val);
+  //orig_syscall_->args[i].value = val; // With RegIndex
+  return orig_syscall_->set_arg(i, val);
 }
 
 bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {

@@ -61,13 +61,17 @@ SyscallCtx* Runtime::get_reinject_ctx(void* cpu, uint64_t pc, uint64_t rax, uint
 void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
   int callno = (int)rax;
 
-  if (callno == SYS_rt_sigreturn ||
-      callno == SYS_clone || callno == SYS_clone3 ||
+  // We universally ignore this to ensure signal handlers can be ended
+  if (callno == SYS_rt_sigreturn) [[unlikely]] return;
+
+
+#if 0
+  if (callno == SYS_clone || callno == SYS_clone3 ||
+      callno == SYS_fork || callno == SYS_vfork) ||
       callno == SYS_exit || callno == SYS_exit_group ||
       callno == SYS_execve || callno == SYS_execveat ||
-      callno == SYS_fork || callno == SYS_vfork) { [[unlikely]] /* These last two should be changed if we try to disable SKIP_FORK */
-    return;
   }
+  #endif
 
   uint64_t pc = next_pc-2;
 
@@ -105,7 +109,7 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
     target->pImpl->set_name(name);
 
     // Track that we have an active coopter running - this is important for safely cleaning up if a program unloads
-    coopted_procs_.insert(target);
+    //coopted_procs_.insert(target);
   }
 
   // Now we have to have a target, new or old. First make sure it's valid (sanity checks for debugging)
@@ -125,12 +129,16 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
   //printf("INJECT: with ctr=%d\n", target->pImpl->ctr_);
   //promise.value_.pprint();
 
-  // Inject the provided syscall!
+  // Inject the provided syscall. if it's a noreturn or a double
+  // return we refuse to leave our values in the guest registers and must clean up now
+  // Noreturn: We could keep it (noreturn might actually return on error), but it's gonna be a memleak in general
+  // Double return: Child won't start at SC so it would start executing with bad R12-R15 and we can't cleanup
+  // We can fix the double return case by hacking up the child start addr, but we don't need to
   if (!target->pImpl->inject_syscall(cpu, promise.value_)) {
     // Returns false if we can't track it (noreturn)
     // In that case we need to cleanup now - note coopter will never advance here
     // Kinda makes sense, if you yield exit, what would you expect?
-    coopted_procs_.erase(target);
+    //coopted_procs_.erase(target);
     delete target;
   }
 }

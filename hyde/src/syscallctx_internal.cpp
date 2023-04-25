@@ -124,9 +124,9 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
   // with some specially-crafted custom return addresses/state for children
   assert(!IS_CLONE_SC(sc.callno) && !IS_FORK_SC(sc.callno));
 
-  // If this syscall will return, we inject into R12-R15 and cleanup on return
+  // If this syscall will return *ONCE* we inject into R12-R15 and cleanup on return
   // Otherwise we just inject this syscall and can't get the results
-  bool set_magic = !IS_NORETURN_SC(sc.callno);
+  bool set_magic = !IS_NORETURN_SC(sc.callno) && !IS_FORK_SC(sc.callno) && !IS_CLONE_SC(sc.callno);
   if (set_magic) {
     r.r12 = reinterpret_cast<uint64_t>(SyscallCtx_);
     //r.r13 = r.rip; // XXX on construct we moved rcx into our rip since that's what it is

@@ -67,6 +67,9 @@ public:
 
   /* Get the original syscall. May have been modified by calls to set_arg */
   hsyscall* get_orig_syscall() { return orig_syscall_;}
+  
+  // Set an arg in the original syscall */
+  void set_nop(uint64_t new_val) const;
 
   void set_coopter(create_coopter_t f) {
     coopter_ = (f)(SyscallCtx_).h_;
@@ -120,12 +123,11 @@ public:
     be sure we catch it on cleanup */
  bool inject_syscall(void* cpu, hsyscall sc);
 
-  /* We're reinjecting - restore original R12-R15 before
-    XXX this might be pointless  */
-  void restore_magic_regs(void* cpu, kvm_regs &new_regs);
+  /* On a sysret we're all done - restore everything and free self */
+  void demagic_and_deallocate(void* cpu, uint64_t pc);
 
   /* At a sysret instruction, set new_regs up to rerun the syscall at sc_pc */
-  void at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs);
+  void at_sysret_redo_syscall(void* cpu, uint64_t sc_pc);
 
   bool has_custom_return() {
     return has_custom_return_;

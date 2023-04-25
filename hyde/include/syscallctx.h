@@ -23,7 +23,9 @@ public:
     uint64_t get_arg(int i) const; /* Get arg from orig_syscall */
     void set_arg(int i, uint64_t val) const; /* Set arg in orig_syscall */
 
-    uint64_t get_result() const; /* Set result */
+    uint64_t get_result() const; /* Get result from last syscall */
+
+    void set_nop(uint64_t retval) const; /* Replace orig_syscall with a no-op that returns retval */
 
     bool translate_gva(uint64_t gva, uint64_t* gpa);
     bool gpa_to_hva(uint64_t gpa, uint64_t *hva);

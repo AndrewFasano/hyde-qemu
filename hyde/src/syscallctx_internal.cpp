@@ -92,6 +92,11 @@ uint64_t SyscallCtx_impl::get_arg_(RegIndex i) const {
   return __get_arg(orig_regs_, i); // RegIndex
 }
 
+void SyscallCtx_impl::set_nop(uint64_t retval) const {
+  orig_syscall_->callno = SYS_getpid; // No side effects
+  orig_syscall_->set_retval(retval);
+}
+
 void SyscallCtx_impl::set_arg(int i, uint64_t val) const {
   // XXX: Do we update orig_regs or do we update orig_syscall?
   // Let's update orig_syscall
@@ -122,7 +127,7 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
 
   // XXX: Can we safely inject into either of these - should be possible
   // with some specially-crafted custom return addresses/state for children
-  assert(!IS_CLONE_SC(sc.callno) && !IS_FORK_SC(sc.callno));
+  //assert(!IS_CLONE_SC(sc.callno) && !IS_FORK_SC(sc.callno));
 
   // If this syscall will return *ONCE* we inject into R12-R15 and cleanup on return
   // Otherwise we just inject this syscall and can't get the results
@@ -139,21 +144,32 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
   return set_magic;
 }
 
-  void SyscallCtx_impl::restore_magic_regs(void* cpu, kvm_regs &new_regs) {
+  void SyscallCtx_impl::demagic_and_deallocate(void* cpu, uint64_t pc) {
     // Restore R12, R13, R14, R15 from orig_regs - this is 
     // when we hit a syscall that we've set up from a sysret
     cpu_ = cpu;
-    new_regs.r12 = orig_regs_.r12;
-    new_regs.r13 = orig_regs_.r13;
-    new_regs.r14 = orig_regs_.r14;
-    new_regs.r15 = orig_regs_.r15;
+    magic_ = -1;
+    kvm_regs new_regs = orig_regs_;
+
+    if (has_custom_retval()) {
+      new_regs.rax = get_custom_retval();
+    }
+    if (has_custom_return()) {
+      new_regs.rip = get_custom_return();
+    }else {
+      new_regs.rip = pc; // Instruction *AFTER* syscall
+    }
+    assert(set_regs(cpu, &new_regs));
+
+    delete this;
   }
 
 
-void SyscallCtx_impl::at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs) {
+void SyscallCtx_impl::at_sysret_redo_syscall(void* cpu, uint64_t sc_pc) {
   // In a sysert we want to go back to the syscall insn at sc_pc.
   //fprintf(fp, "In sysret, we want to want to re-execute syscall insn at %lx, object is at %p\n", sc_pc, this);
 
+  kvm_regs new_regs = orig_regs_;
   cpu_ = cpu;
   new_regs.r12 = reinterpret_cast<uint64_t>(SyscallCtx_);
   new_regs.r13 = sc_pc;

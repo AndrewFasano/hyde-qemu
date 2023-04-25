@@ -24,6 +24,10 @@ uint64_t SyscallCtx::get_result() const {
   return pImpl->get_last_rv();
 }
 
+void SyscallCtx::set_nop(uint64_t result) const {
+  pImpl->set_nop(result);
+}
+
 hsyscall* SyscallCtx::get_orig_syscall() const {
   return pImpl->get_orig_syscall();
 }

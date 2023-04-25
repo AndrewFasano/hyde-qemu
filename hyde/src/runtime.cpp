@@ -159,39 +159,25 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
   target->pImpl->set_last_rv(retval);
   target->pImpl->advance_coopter();
 
-  // XXX: Do we need new_regs at all? Can we just use orig?
-  kvm_regs new_regs;
-  assert(get_regs(cpu, &new_regs));
-  // In the case of !done, we clobber new_regs R12-R15, leaving the rest alone (inc RAX)
-  // In the case of done, we clobbere new_regs R12-R15, leaving the rest alone except RAX on cusotm
-  // Would orig_regs !{R12-R15} ever change? Probably not?
-
+  // In the case of !done, we set orig_regs with R12-R15 modified
+  // In the case of done, we set orig_regs with RAX clobbered to retval and RIP set to pc or custom return address
 
   if (!target->pImpl->is_coopter_done()) {
     // We have another syscall to run! Need to go back to pc-2 and ensure we only run at the right time
     //printf("Bring it back now y'all - %p needs rexec of %lx\n", target, pc-2);
-    target->pImpl->at_sysret_redo_syscall(cpu, pc-2, new_regs);
+    target->pImpl->at_sysret_redo_syscall(cpu, pc-2);
     return; // Updated registers
   }
 
   auto promise = target->pImpl->get_coopter_promise();
   ExitStatus result = promise.retval;
 
-  //fprintf(fp, "SYSRET at %lx - all done, original sc (%lld) returns %lld, let's clean up target %p\n", pc, target->orig_regs.rax, new_regs.rax, target);
-  // All done with injection. Restore original registers
-  uint64_t new_retval = (target->pImpl->has_custom_retval()) ? target->pImpl->get_custom_retval() : new_regs.rax;
-  uint64_t retaddr = target->pImpl->has_custom_return() ? target->pImpl->get_custom_return() : pc; // XXX pc or new_regs.rip?
-
-  // Restore original R12-15 values and decrement refcount
-  target->pImpl->restore_magic_regs(cpu, new_regs);
-  target->pImpl->magic_ = -1;
+  // Hold onto name so we can cleanup with it
   std::string name = target->pImpl->get_name();
-  delete target; // XXX if we try handling forks this will need to be more
+  //fprintf(fp, "SYSRET at %lx - all done, original sc (%lld) returns %lld, let's clean up target %p\n", pc, target->orig_regs.rax, new_regs.rax, target);
 
-  new_regs.rax = new_retval; // Only changes it if we had force_retval
-  new_regs.rip = retaddr; // Only changes it if we had custom_return
-
-  assert(set_regs(cpu, &new_regs)); // Apply new_regs
+  // All done with injection. Restore original registers, free target
+  target->pImpl->demagic_and_deallocate(cpu, pc);
 
   // Based on result, update state for the whole hyde program
   switch (result) {

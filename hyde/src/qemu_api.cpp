@@ -107,14 +107,13 @@ bool can_translate_gva(void* cpu, uint64_t gva) {
  * will be set in hva argument. */
 bool translate_gva(void* cpu, uint64_t gva, uint64_t* hva) {
     if (!can_translate_gva(cpu, gva)) {
-    return false;
+        return false;
     }
     // Duplicate some logic from can_translate_gva so we can get the physaddr here
-    struct kvm_translation trans = { .linear_address = (__u64)gva };
+    struct kvm_translation trans = { .linear_address = (__u64)gva & (uint64_t)-1 };
     assert(kvm_vcpu_ioctl(cpu, KVM_TRANSLATE, &trans) == 0);
 
-    assert(kvm_host_addr_from_physical_memory(trans.physical_address, (uint64_t*)hva) == 1);
-    return true;
+    return kvm_host_addr_from_physical_memory(trans.physical_address, (uint64_t*)hva) == 1; // True on success
 }
 
 bool gpa_to_hva(void* cpu, uint64_t gpa, uint64_t* hva) {

@@ -1,0 +1,31 @@
+#include "syscallctx.h"
+#include "hyde/src/syscallctx_internal.h"
+
+// Nobody can initialize this class, it's only created via the pImpl
+//SyscallCtx::SyscallCtx()
+//    : pImpl(std::make_unique<SyscallCtx_impl>(nullptr)) {
+//}
+
+SyscallCtx::SyscallCtx(void* cpu)
+: pImpl(std::make_unique<SyscallCtx_impl>(cpu, this)) {}
+
+SyscallCtx::~SyscallCtx() = default;
+
+uint64_t SyscallCtx::get_arg(RegIndex i) const {
+  return pImpl->get_arg(i);
+}
+
+uint64_t SyscallCtx::get_result() const {
+  return pImpl->get_last_rv();
+}
+
+hsyscall* SyscallCtx::get_orig_syscall() const {
+  return pImpl->get_orig_syscall();
+}
+
+bool SyscallCtx::translate_gva(uint64_t gva, uint64_t* gpa) {
+    return pImpl->translate_gva(gva, gpa);
+}
+bool SyscallCtx::gpa_to_hva(uint64_t gpa, uint64_t* hva) {
+    return pImpl->gpa_to_hva(gpa, hva);
+}

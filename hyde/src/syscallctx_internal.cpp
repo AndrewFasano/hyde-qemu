@@ -1,4 +1,4 @@
-#include "hyde/src/syscall_context_internal.h"
+#include "hyde/src/syscallctx_internal.h"
 #include "syscall_coroutine.h"
 #include "qemu_api.h"
 #include <linux/kvm.h>
@@ -35,10 +35,10 @@ magic4 = sysret_pc              | syscall_pc              KVM:R13
 #define __set_arg(regs, idx, val) REG_ACCESS(regs, idx) = (val)
 
 
-syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
+SyscallCtx_impl::SyscallCtx_impl(void* cpu, SyscallCtx* ctx) :
   magic_(0x12345678),
   ctr_(0),
-  syscall_context_(ctx),
+  SyscallCtx_(ctx),
   coopter_(nullptr),
   has_custom_retval_(false),
   has_custom_return_(false),
@@ -78,16 +78,16 @@ syscall_context_impl::syscall_context_impl(void* cpu, syscall_context* ctx) :
   orig_syscall_->set_args(6, args);
 }
 
-syscall_context_impl::~syscall_context_impl() {
+SyscallCtx_impl::~SyscallCtx_impl() {
   delete orig_syscall_;
   if (coopter_ != nullptr) coopter_.destroy();
 }
 
-uint64_t syscall_context_impl::get_arg(RegIndex i) const {
+uint64_t SyscallCtx_impl::get_arg(RegIndex i) const {
   return __get_arg(orig_regs_, i);
 }
 
-bool syscall_context_impl::inject_syscall(void* cpu, hsyscall sc) {
+bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
   cpu_ = cpu;
   kvm_regs r = orig_regs_;
 
@@ -115,7 +115,7 @@ bool syscall_context_impl::inject_syscall(void* cpu, hsyscall sc) {
   // Otherwise we just inject this syscall and can't get the results
   bool set_magic = !IS_NORETURN_SC(sc.callno);
   if (set_magic) {
-    r.r12 = reinterpret_cast<uint64_t>(syscall_context_);
+    r.r12 = reinterpret_cast<uint64_t>(SyscallCtx_);
     //r.r13 = r.rip; // XXX on construct we moved rcx into our rip since that's what it is
     r.r13 = r.rcx;
     r.r14 = MAGIC_VALUE;
@@ -126,7 +126,7 @@ bool syscall_context_impl::inject_syscall(void* cpu, hsyscall sc) {
   return set_magic;
 }
 
-  void syscall_context_impl::restore_magic_regs(void* cpu, kvm_regs &new_regs) {
+  void SyscallCtx_impl::restore_magic_regs(void* cpu, kvm_regs &new_regs) {
     // Restore R12, R13, R14, R15 from orig_regs - this is 
     // when we hit a syscall that we've set up from a sysret
     cpu_ = cpu;
@@ -137,12 +137,12 @@ bool syscall_context_impl::inject_syscall(void* cpu, hsyscall sc) {
   }
 
 
-void syscall_context_impl::at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs) {
+void SyscallCtx_impl::at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm_regs& new_regs) {
   // In a sysert we want to go back to the syscall insn at sc_pc.
   //fprintf(fp, "In sysret, we want to want to re-execute syscall insn at %lx, object is at %p\n", sc_pc, this);
 
   cpu_ = cpu;
-  new_regs.r12 = reinterpret_cast<uint64_t>(syscall_context_);
+  new_regs.r12 = reinterpret_cast<uint64_t>(SyscallCtx_);
   new_regs.r13 = sc_pc;
   new_regs.r14 = MAGIC_VALUE_REPEAT;
   new_regs.r15 = new_regs.r12 ^ new_regs.r13;
@@ -154,9 +154,9 @@ void syscall_context_impl::at_sysret_redo_syscall(void* cpu, uint64_t sc_pc, kvm
   assert(set_regs(cpu, &new_regs));
 }
 
-bool syscall_context_impl::translate_gva(uint64_t gva, uint64_t* gpa) {
+bool SyscallCtx_impl::translate_gva(uint64_t gva, uint64_t* gpa) {
     return ::translate_gva(cpu_, gva, gpa);
 }
-bool syscall_context_impl::gpa_to_hva(uint64_t gpa, uint64_t *hva) {
+bool SyscallCtx_impl::gpa_to_hva(uint64_t gpa, uint64_t *hva) {
     return ::gpa_to_hva(cpu_, gpa, hva);
 }

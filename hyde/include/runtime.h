@@ -13,11 +13,11 @@
 #define R14_INJECTED 0xdeadbeef
 
 #if 0
-int getregs(syscall_context*, struct kvm_regs *);
+int getregs(SyscallCtx*, struct kvm_regs *);
 int getregs(void*, struct kvm_regs *);
-int setregs(syscall_context*, struct kvm_regs *);
+int setregs(SyscallCtx*, struct kvm_regs *);
 int setregs(void*, struct kvm_regs *);
-void set_regs_to_syscall(syscall_context* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig);
+void set_regs_to_syscall(SyscallCtx* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig);
 #define PRINT_REG(REG) std::cout << "  " << #REG << ": " << std::hex << std::setw(16) << std::setfill('0') << regs.REG << std::endl;
 #endif
 
@@ -25,7 +25,7 @@ void set_regs_to_syscall(syscall_context* details, void *cpu, hsyscall *sysc, st
 
 
 class Plugin;
-class syscall_context;
+class SyscallCtx;
 struct PluginDeleter;
 // Necessary to use unique_ptr with Plugin
 using PluginPtr = std::unique_ptr<Plugin, PluginDeleter>;
@@ -43,7 +43,7 @@ public:
   void on_sysret( void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
 
 private:
-  //syscall_context* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned long fs, int callno, unsigned long asid, unsigned long pc);
+  //SyscallCtx* find_and_init_coopter(void* cpu, unsigned long cpu_id, unsigned long fs, int callno, unsigned long asid, unsigned long pc);
   //bool is_syscall_targetable(int callno, unsigned long asid);
 
   using PluginPtr = std::unique_ptr<Plugin>;
@@ -55,7 +55,7 @@ private:
     void* handle;
   };
 
-  syscall_context* get_reinject_ctx(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
+  SyscallCtx* get_reinject_ctx(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
 
 
   void register_plugin_handlers(Plugin* plugin);
@@ -70,10 +70,10 @@ private:
 
 
   std::unordered_map<std::string, LoadedPlugin> loaded_plugins_;
-  std::set<syscall_context*> coopted_procs_ = {}; // Procs that have been coopted
+  std::set<SyscallCtx*> coopted_procs_ = {}; // Procs that have been coopted
 
-  //std::set<syscall_context*> double_return_parents_ = {};
-  //std::set<syscall_context*> double_return_children_ = {};
+  //std::set<SyscallCtx*> double_return_parents_ = {};
+  //std::set<SyscallCtx*> double_return_children_ = {};
 
   using PluginInitFn = bool (*)(std::unordered_map<int, create_coopter_t>&);
 };

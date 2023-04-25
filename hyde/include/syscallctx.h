@@ -5,15 +5,15 @@
 
 enum class RegIndex;
 
-class syscall_context_impl;
+class SyscallCtx_impl;
 
-// This is the interface plugins have to syscall_context objects
+// This is the interface plugins have to SyscallCtx objects
 // They'll need to yield_syscall(ctx, ...) and should be able to get original syscall number/args
 // as well as modifying the original syscall and setting a retval
 
-class syscall_context {
+class SyscallCtx {
 public:
-    syscall_context(void* cpu);
+    SyscallCtx(void* cpu);
 
     hsyscall* get_orig_syscall() const;
     uint64_t get_arg(RegIndex i) const; /* Get arg from syscall */
@@ -24,17 +24,17 @@ public:
     bool gpa_to_hva(uint64_t gpa, uint64_t *hva);
 
     struct kvm_regs get_orig_regs() const; /* Get original regs*/
-    // Other public methods for plugins to access syscall_context information
+    // Other public methods for plugins to access SyscallCtx information
 
 private:
-    friend class Runtime; // Give access to Runtime for constructing and managing syscall_context objects
+    friend class Runtime; // Give access to Runtime for constructing and managing SyscallCtx objects
 
 
-    syscall_context();
-    ~syscall_context();
+    SyscallCtx();
+    ~SyscallCtx();
 
     // Unique pointer to the implementation
-    std::unique_ptr<syscall_context_impl> pImpl;
+    std::unique_ptr<SyscallCtx_impl> pImpl;
 };
 
 #if 0
@@ -44,11 +44,11 @@ private:
  * It also contains a pointer to the original system call that the process was executing.
  * Finally, it contains a pointer to the original registers that the process was executing.
 */
-struct syscall_context {
+struct SyscallCtx {
 
-  //std::function<void(_syscall_context*, void*, unsigned long, unsigned long, unsigned long)> *on_ret; // Unused
+  //std::function<void(_SyscallCtx*, void*, unsigned long, unsigned long, unsigned long)> *on_ret; // Unused
 
-  syscall_context(void *cpu, uint64_t asid) :
+  SyscallCtx(void *cpu, uint64_t asid) :
     coopter(nullptr),
     name(""),
     cpu(cpu),

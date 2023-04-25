@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <assert.h>
-#include "plugin_common.h"
+#include "hyde_common.h"
 #include "syscall_coroutine.h"
 #include "runtime.h"
 #include "hsyscall.h"
-#include "syscall_context_internal.h"
+#include "syscallctx_internal.h"
 #include "qemu_api.h"
 #include <syscall.h>
 #include <cstring>
@@ -39,7 +39,7 @@ bool get_magic_values(uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15, ui
   return true;
 }
 
-syscall_context* Runtime::get_reinject_ctx(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
+SyscallCtx* Runtime::get_reinject_ctx(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15) {
   uint64_t out_key;
   uint64_t out_pc;
 
@@ -54,7 +54,7 @@ syscall_context* Runtime::get_reinject_ctx(void* cpu, uint64_t pc, uint64_t rax,
   }
 
   // Alright, we want to inject a syscall here based off our out_key
-  return reinterpret_cast<syscall_context*>(out_key);
+  return reinterpret_cast<SyscallCtx*>(out_key);
 
 }
 
@@ -72,7 +72,7 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
   uint64_t pc = next_pc-2;
 
   // If we've already coopted this process, get a handle to our target state
-  syscall_context* target = get_reinject_ctx(cpu, pc, rax, r12, r13, r14, r15);
+  SyscallCtx* target = get_reinject_ctx(cpu, pc, rax, r12, r13, r14, r15);
 
   // Otherwise, it's just a normal guest syscall. If we have any registered
   // create_coopter_t functions, let them co-opt. Otherwise we leave it alone
@@ -98,7 +98,7 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
       }
     }
 
-    target = new syscall_context(cpu);
+    target = new SyscallCtx(cpu);
     //printf("SYSCALL at %lx: new injection with target at %p, \n", pc, target);
 
     target->pImpl->set_coopter(*f);
@@ -144,7 +144,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
   }
   //fprintf(fp, "SYSRET with target 0x%lx\n", r12);
 
-  syscall_context* target = (syscall_context*)r12;
+  SyscallCtx* target = (SyscallCtx*)r12;
   assert(target->pImpl->magic_ == 0x12345678);
   //printf("SYSRET with target 0x%lx, ctr %d\n", r12, target->pImpl->ctr_);
   target->pImpl->advance_coopter();

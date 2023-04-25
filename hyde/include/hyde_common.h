@@ -1,12 +1,12 @@
 #pragma once
 
 #include "runtime.h"
-#include "syscall_context.h"
+#include "syscallctx.h"
 #include "syscall_coroutine.h"
 #include <functional>
 #include <memory>
 
-using SyscallHandler = std::function<SyscallCoroutine(syscall_context*)>;
+using SyscallHandler = std::function<SyscallCoroutine(SyscallCtx*)>;
 
 enum class ExitStatus {
     SUCCESS = 0, // OK & do nothing

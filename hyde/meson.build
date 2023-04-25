@@ -1,12 +1,12 @@
 
 kvm_ss = ss.source_set()
 kvm_ss.add([files(
-  'include/plugin_common.h',
-  'include/syscall_context.h',
+  'include/hyde_common.h',
+  'include/syscallctx.h',
   'include/runtime.h',
-  'src/syscall_context.cpp',
-  'src/syscall_context_internal.cpp',
-  'src/syscall_context_internal.h',
+  'src/syscallctx.cpp',
+  'src/syscallctx_internal.cpp',
+  'src/syscallctx_internal.h',
   'src/runtime.cpp',
   'src/runtime_instance.cpp',
   'src/qemu_api.cpp',

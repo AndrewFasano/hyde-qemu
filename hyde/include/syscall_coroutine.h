@@ -8,7 +8,7 @@
 // SyscallCoroutines and SyscCoroHelpers
 enum class ExitStatus;
 
-class syscall_context;
+class SyscallCtx;
 
 template <typename T, typename R>
 struct HydeCoro {
@@ -53,4 +53,4 @@ using SyscCoroHelper = HydeCoro<hsyscall, int>;
 using coopter_t = std::coroutine_handle<SyscallCoroutine::promise_type>;
 
 // Pointer to a function that, when called, initializes a SyscallCoroutine?
-using create_coopter_t = std::function<SyscallCoroutine(syscall_context*)>;
+using create_coopter_t = std::function<SyscallCoroutine(SyscallCtx*)>;

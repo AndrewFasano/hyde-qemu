@@ -1,7 +1,6 @@
 #pragma once
 
-//#include "hyde/include/syscall_context.h"
-#include "plugin_common.h"
+#include "hyde_common.h"
 #include "syscall_coroutine.h"
 #include <linux/kvm.h>
 #include <cassert>
@@ -53,17 +52,17 @@ static inline void pretty_print_diff_regs(kvm_regs regs1, kvm_regs regs2) {
 }
 
 
-class syscall_context_impl {
+class SyscallCtx_impl {
 public:
-  syscall_context_impl(void* cpu, syscall_context *ctx);
-  //syscall_context_impl(const syscall_context_impl& other, void* cpu, syscall_context *ctx);
-  ~syscall_context_impl();
+  SyscallCtx_impl(void* cpu, SyscallCtx *ctx);
+  //SyscallCtx_impl(const SyscallCtx_impl& other, void* cpu, SyscallCtx *ctx);
+  ~SyscallCtx_impl();
 
 
   uint64_t get_arg(RegIndex i) const;
 
   void set_coopter(create_coopter_t f) {
-    coopter_ = (f)(syscall_context_).h_;
+    coopter_ = (f)(SyscallCtx_).h_;
   }
 
   void set_name(std::string name) {
@@ -148,7 +147,7 @@ public:
   int ctr_; // XXX DEBUGGING
 
 private:
-  syscall_context *syscall_context_;
+  SyscallCtx *SyscallCtx_;
 
   struct kvm_regs orig_regs_; // The original registers when we started simulating the guest process
   bool set_orig_regs(void* cpu);

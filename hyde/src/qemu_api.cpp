@@ -1,6 +1,8 @@
 #include <cassert>
 #include <linux/kvm.h>
-#include "internal.h"
+//#include "internal.h"
+#include "hyde_common.h"
+#include <set>
 #include "hyde/src/runtime_instance.h"
 #include "qemu_api.h" // "extern C" for on_syscall/sysret 
 
@@ -14,6 +16,9 @@
 
 // Hyde is technically enabled per CPU, we'll use a global flag to indicate if any are loaded. Assume we're always loaded/unloaded from 0 to N
 static bool hyde_enabled=false;
+
+// CPUs that have syscall introspection enabled
+std::set<int> introspection_cpus;
 
 extern "C" {
     // Can't just include kvm header, it has too much stuff in it.

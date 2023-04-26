@@ -182,7 +182,6 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
 
   // Hold onto name so we can cleanup with it
   std::string name = target->pImpl->get_name();
-  //fprintf(fp, "SYSRET at %lx - all done, original sc (%lld) returns %lld, let's clean up target %p\n", pc, target->orig_regs.rax, new_regs.rax, target);
 
   // All done with injection. Restore original registers, free target
   {
@@ -336,7 +335,7 @@ bool Runtime::unload_hyde_prog(std::string path) {
 
     // No active coopter is based off this program - it's safe to unload!
     if (!active) {
-        std::cout << "HyDE program " << *it << " no longer has active coopters. Disabling." << std::endl;
+        std::cout << "\n[HyDE] Program " << *it << " no longer has active coopters. Disabling." << std::endl;
         it = pending_exits_.erase(it);
       } else {
         ++it; // XXX only increment if we didn't update with erase

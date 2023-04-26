@@ -93,7 +93,9 @@ public:
     return coopter_.promise();
   }
 
-  bool is_coopter_done() { return coopter_.done(); }
+  bool is_coopter_done() {
+     return coopter_.done();
+  }
 
   bool has_custom_retval() {
      return has_custom_retval_;

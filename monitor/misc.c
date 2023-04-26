@@ -2000,12 +2000,9 @@ void hmp_hyde_enable(Monitor *mon, const QDict *qdict)
     const char* capname = qdict_get_try_str(qdict, "name");
     Error *err = NULL;
     if (!capname) {
-        error_setg(&err, "Capability name must be provided");
+        error_setg(&err, "HyDE program path must be provided");
     } else {
-      CPUState *cs;
-      CPU_FOREACH(cs) {
-        kvm_load_hyde_capability(capname, cs, cs->cpu_index);
-      }
+        kvm_load_hyde_prog(capname);
     }
     hmp_handle_error(mon, err);
 }
@@ -2016,20 +2013,14 @@ void hmp_hyde_disable(Monitor *mon, const QDict *qdict)
     Error *err = NULL;
 
     if (!capname) {
-        error_setg(&err, "Capability name must be provided");
+        error_setg(&err, "HyDE program path must be provided");
     } else {
-      CPUState *cs;
-      CPU_FOREACH(cs) {
-        kvm_unload_hyde_capability(capname, cs, cs->cpu_index); 
-      }
+        kvm_unload_hyde_prog(capname);
     }
     hmp_handle_error(mon, err);
 }
 
 void hmp_hyde_disable_all(Monitor *mon, const QDict *qdict)
 {
-    CPUState *cs;
-    CPU_FOREACH(cs) {
-        kvm_unload_hyde(cs, cs->cpu_index); 
-    }
+    kvm_unload_all_hyde_progs();
 }

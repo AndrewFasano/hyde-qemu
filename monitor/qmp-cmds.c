@@ -111,34 +111,25 @@ void qmp_system_powerdown(Error **errp)
 
 void qmp_hyde_load(const char* capname, Error **errp)
 {
-    CPUState *cs;
     if (!capname) {
-        error_setg(errp, "Capability name must be provided");
+        error_setg(errp, "HyDE program path must be provided");
     } else {
-        CPU_FOREACH(cs) {
-            kvm_load_hyde_capability(capname, cs, cs->cpu_index);
-        }
+        kvm_load_hyde_prog(capname);
     }
 }
 
 void qmp_hyde_unload(const char* capname, Error **errp)
 {
-    CPUState *cs;
     if (!capname) {
-        error_setg(errp, "Capability name must be provided");
+        error_setg(errp, "HyDE program path must be provided");
     } else {
-        CPU_FOREACH(cs) {
-            kvm_unload_hyde_capability(capname, cs, cs->cpu_index);
-        }
+        kvm_unload_hyde_prog(capname);
     }
  }
 
 void qmp_hyde_unload_all(Error **errp)
  {
-    CPUState *cs;
-    CPU_FOREACH(cs) {
-        kvm_unload_hyde(cs, cs->cpu_index);
-    }
+    kvm_unload_all_hyde_progs();
  }
 
 void qmp_cont(Error **errp)

@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <mutex>
 
 #define R14_INJECTED 0xdeadbeef
 
@@ -32,12 +33,15 @@ using PluginPtr = std::unique_ptr<Plugin, PluginDeleter>;
 
 class Runtime {
 public:
-  //void load_plugin(const std::string& plugin_path);
-  //void unload_plugin(const std::string& plugin_path);
-
   bool load_hyde_prog(std::string path);
-  bool unload_hyde_prog(void* cpu, std::string path);
-  bool unload_all(void* cpu);
+
+  /* Unload a specific program. Calls potentially_disable_hyde at end */
+  bool unload_hyde_prog(std::string path);
+
+  /* If no syscalls are set to be coopted and no coopters are running, disable */
+  bool potentially_disable_hyde(void);
+
+  bool unload_all(void);
 
   void on_syscall(void* cpu, uint64_t pc, uint64_t callno, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
   void on_sysret( void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
@@ -67,10 +71,14 @@ private:
   std::unordered_map<int, create_coopter_t> syscall_handlers_;
 
   std::unordered_map<std::string, std::vector<int>> coopters_map_; // filename -> hooked syscalls
-
+  std::mutex coopters_map_lock_;
 
   std::unordered_map<std::string, LoadedPlugin> loaded_plugins_;
   std::set<SyscallCtx*> coopted_procs_ = {}; // Procs that have been coopted
+  std::mutex coopted_procs_lock_;
+
+  std::set<std::string> pending_exits_ = {}; // Procs that have been coopted
+  std::mutex pending_exits_lock_;
 
   //std::set<SyscallCtx*> double_return_parents_ = {};
   //std::set<SyscallCtx*> double_return_children_ = {};

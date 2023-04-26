@@ -3077,24 +3077,29 @@ int kvm_vm_ioctl(KVMState *s, int type, ...)
     return ret;
 }
 
-int kvm_vcpu_ioctl_pause_vm(CPUState *cpu, int type, ...) {
-  // Pause the guest while we run this IOCTL
-    int ret;
-    void *arg;
-    va_list ap;
+#define KVM_HYDE_TOGGLE 0x8001aebb
+
+void kvm_toggle_hyde(bool enable);
+
+static void _kvm_disable_hyde_async(void *opaque) {
     bool was_running = runstate_is_running();
-
-    va_start(ap, type);
-    arg = va_arg(ap, void *);
-    va_end(ap);
-
     if (was_running) vm_stop(RUN_STATE_PAUSED);
-    ret = ioctl(cpu->kvm_fd, type, arg);
-    if (was_running) vm_start();
-    if (ret == -1) {
-        ret = -errno;
+
+    int enable = opaque != NULL; // it's 0 or 1 but compilers are annoying
+
+    CPUState *cpu;
+    CPU_FOREACH(cpu) {
+        if (kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, enable) != 0) {
+            error_report("Failed to disable HyDE on CPU %d", cpu->cpu_index);
+        }
     }
-    return ret;
+    if (was_running) vm_start();
+}
+
+void kvm_toggle_hyde(bool enable) {
+    QEMUBH *bh;
+    bh = qemu_bh_new(_kvm_disable_hyde_async, (void*)enable);
+    qemu_bh_schedule(bh);
 }
 
 int kvm_vcpu_ioctl(CPUState *cpu, int type, ...)

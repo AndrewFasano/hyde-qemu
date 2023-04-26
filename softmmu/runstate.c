@@ -743,9 +743,6 @@ int qemu_main_loop(void)
 #endif
     }
 
-    // Done with main loop wait - unload HyDe plugins?
-    kvm_unload_hyde(NULL, 0);
-
     return status;
 }
 

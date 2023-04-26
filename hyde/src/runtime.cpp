@@ -9,6 +9,7 @@
 #include <syscall.h>
 #include <cstring>
 #include <algorithm>
+#include <mutex>
 
 // Set on syscall, looked for on sysret
 #define MAGIC_VALUE 0xdeadbeef
@@ -109,7 +110,10 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
     target->pImpl->set_name(name);
 
     // Track that we have an active coopter running - this is important for safely cleaning up if a program unloads
-    //coopted_procs_.insert(target);
+    {
+      std::lock_guard<std::mutex> lock(coopted_procs_lock_);
+      coopted_procs_.insert(target);
+    }
   }
 
   // Now we have to have a target, new or old. First make sure it's valid (sanity checks for debugging)
@@ -138,7 +142,11 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
     // Returns false if we can't track it (noreturn)
     // In that case we need to cleanup now - note coopter will never advance here
     // Kinda makes sense, if you yield exit, what would you expect?
-    //coopted_procs_.erase(target);
+    
+    {
+      std::lock_guard<std::mutex> lock(coopted_procs_lock_);
+      coopted_procs_.erase(target);
+    }
     delete target;
   }
 }
@@ -177,6 +185,10 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
   //fprintf(fp, "SYSRET at %lx - all done, original sc (%lld) returns %lld, let's clean up target %p\n", pc, target->orig_regs.rax, new_regs.rax, target);
 
   // All done with injection. Restore original registers, free target
+  {
+    std::lock_guard<std::mutex> lock(coopted_procs_lock_);
+    coopted_procs_.erase(target);
+  }
   target->pImpl->demagic_and_deallocate(cpu, pc);
 
   // Based on result, update state for the whole hyde program
@@ -185,11 +197,13 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
       printf("[HyDE] Fatal error in %s\n", name.c_str());
       [[fallthrough]];
     case ExitStatus::FINISHED:
-      //if (!pending_exits.contains(name)) {
-      //  printf("[HyDE] Unloading %s on cpu %d\n", name.c_str(), 0);
-      //  //try_unload_coopter(details->name, cpu, 0); // XXX multicore guests, need to do for all CPUs?
-      //  pending_exits.insert(name);
-      //}
+      // When a hyde program requests to quit, we immediately stop launching new coopters for it
+      // but we need to wait until there are no actice coopters for it before we can safely disable hyde
+      if (coopters_map_.count(name)) {
+        // This capability is active - first time we've asked to unload it
+        unload_hyde_prog(name);
+        return; // Skip redundant call potentially_disable_hyde
+      }
       break;
 
     case ExitStatus::SINGLE_FAILURE:
@@ -201,40 +215,13 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
       break;
   }
 
-    // For each pending exit (i.e., coopter that is done), check if any of the injections we're tracking are it
-#if 0
-  for (auto it = pending_exits.begin(); it != pending_exits.end(); ) {
-    // Check if any coopters are still active
-    bool active = false;
-    for (const auto &kv : coopted_procs) {
-      if (kv->name == *it) {
-        active = true;
-        break;
-      }
-    }
-
-    if (!active) {
-      if (try_unload_coopter(*it, cpu, 0)) { // Safe to unload now
-        printf("[HyDE] Unloaded %s\n", it->c_str());
-        //it = std::erase_if(pending_exits, [&](const auto& name) { return name == *it; });
-        //it = std::remove_if(pending_exits.begin(), pending_exits.end(), [&](const auto& name) { return name == *it; });
-        it = pending_exits.erase(it);
-        continue;
-      } else {
-        printf("ERROR erasing %s\n", it->c_str());
-      }
-    }
-    ++it;
-  }
-#endif
-
-
-
+  potentially_disable_hyde();
 }
 
 bool Runtime::load_hyde_prog(std::string path) {
   // introspection is enabled and program should be unique by the time we get here
 
+  // Should we store this handle and dlcose it on unload?
   void* handle = dlopen(path.c_str(), RTLD_NOW);
   if (handle == NULL) {
     std::cerr  << "Could not open capability at " << path << ": " << dlerror() << std::endl;
@@ -274,38 +261,97 @@ bool Runtime::load_hyde_prog(std::string path) {
 
     std::cout << "HyDE program " << path << " will coopt SYS_" << key  << std::endl;
   }
-  coopters_map_[path] = hooked_scs;
+
+  {
+    std::lock_guard<std::mutex> lock(coopters_map_lock_);
+    coopters_map_[path] = hooked_scs;
+  }
 
   return true;
 }
 
-bool Runtime::unload_all(void* cpu) {
+bool Runtime::unload_all(void) {
   // Called at qemu shutdown. Core hyde platform could log something here
   // HyDE program destructors will run independently from this at shutdown
+  // Copy coopters_map_
+
+  std::unordered_map<std::string, std::vector<int>> coopters_map_copy;
+  {
+    std::lock_guard<std::mutex> lock(coopters_map_lock_);
+    coopters_map_copy = coopters_map_;
+  }
+
+  // Save to iterate through our copy while original is erased
+  for (auto it = coopters_map_copy.begin(); it != coopters_map_copy.end(); ++it) {
+    unload_hyde_prog(it->first);
+  }
+
   return true;
 }
 
-bool Runtime::unload_hyde_prog(void* cpu, std::string path) {
+bool Runtime::unload_hyde_prog(std::string path) {
   if (!coopters_map_.count(path)) {
     std::cerr << "HyDE program " << path << " has not been loaded" << std::endl;
     return false;
   }
 
-  // Remove all the coopted syscalls that this program set up
-  // Now we won't intercept future calls to these
-  for (auto it = coopters_map_[path].begin(); it != coopters_map_[path].end(); ++it) {
-    int key = *it;
-    syscall_handlers_.erase(key);
-  }
-  // XXX TODO: if we have no active coopters and no hyde programs loaded we can disable HyDE now
+  {
+    std::lock_guard<std::mutex> lock(pending_exits_lock_);
+    // If this isn't already pending an unload, disable all the hooks it has in syscall_handlers_
+    if (pending_exits_.count(path) == 0) {
+      std::cerr << "HyDE program " << path << " now pending exit" << std::endl;
+      pending_exits_.insert(path);
 
-  // If this hyde program has no active coopters, we can now erase it and possibly disablre
-  // otherwise we have to wait until they all finish
-  //coopters_map.erase(path);
-  //if (coopters_map.empty()) {
-  //  disable_syscall_introspection(cpu, idx);
-  //}
+      for (auto it = coopters_map_[path].begin(); it != coopters_map_[path].end(); ++it) {
+        syscall_handlers_.erase(*it);
+      }
+
+      // And erase it from our coopters_map entirely
+      coopters_map_.erase(path);
+    }
+  }
+
+  potentially_disable_hyde();
   return true;
+}
+
+  bool Runtime::potentially_disable_hyde(void) {
+  // For each hyde program that's pending unload, check if any active
+  // coopters are running it - if not, we can unload.
+  // Finally, if nothing is loaded, disable hyde
+  // Returns true if hyde is disabled, false otherwise
+  
+  std::lock_guard<std::mutex> lock(coopted_procs_lock_);
+  std::lock_guard<std::mutex> lock2(pending_exits_lock_);
+
+  for (auto it = pending_exits_.begin(); it != pending_exits_.end(); ) {
+    // For each active coopter, check if it's managed by this hyde program
+    bool active = false;
+    for (const auto &kv : coopted_procs_) {
+      if (kv->pImpl->get_name() == *it) {
+        active = true;
+        break;
+      }
+    }
+
+    // No active coopter is based off this program - it's safe to unload!
+    if (!active) {
+        std::cout << "HyDE program " << *it << " no longer has active coopters. Disabling." << std::endl;
+        it = pending_exits_.erase(it);
+      } else {
+        ++it; // XXX only increment if we didn't update with erase
+      }
+  }
+
+
+  // If we're empty and nothing is pending, we can disable hyde
+  if (coopters_map_.empty() && pending_exits_.empty()) {
+    std::cerr << "HyDE Disabling all syscall introspection" << std::endl;
+    // Disable syscall introspection
+    disable_cpu_syscall_introspection();
+    return true;
+  }
+  return false;
 }
 
 // Implement the custom deleter, necessary for some reason

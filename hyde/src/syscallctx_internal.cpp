@@ -151,13 +151,30 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
     magic_ = -1;
     kvm_regs new_regs = orig_regs_;
 
-    if (has_custom_retval()) {
+    // Do we need to keep rflags? I'm not sure if we can/should
+    // With it unset perf_eval N=1 coreutils multicore passes
+    //kvm_regs current_regs;
+    //assert(get_regs(cpu, &current_regs));
+    //new_regs.rflags = current_regs.rflags; // Keep changes to RFLAGS?
+
+    if (!has_custom_retval()) [[likely]] {
+      // Generally we set the retval to the result of the last syscall
+      // (i.e., what's currently in RAX before we change registers)
+      kvm_regs current_regs;
+      assert(get_regs(cpu, &current_regs));
+      new_regs.rax = current_regs.rax; // We want the process to see the retval of the last syscall!
+    } else {
+      // But if a user wants, we can also set it to something custom
       new_regs.rax = get_custom_retval();
     }
-    if (has_custom_return()) {
+
+    if (has_custom_return()) [[unlikely]] {
+      // If a user specifies a custom retaddr we can support it
+      // though this is untested in the current design
       new_regs.rip = get_custom_return();
-    }else {
-      new_regs.rip = pc; // Instruction *AFTER* syscall
+    } else {
+      // In general we set the RIP to the PC arg which should be the insn after the syscall
+      new_regs.rip = pc;
     }
     assert(set_regs(cpu, &new_regs));
 

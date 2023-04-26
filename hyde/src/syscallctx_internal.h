@@ -125,8 +125,8 @@ public:
     be sure we catch it on cleanup */
  bool inject_syscall(void* cpu, hsyscall sc);
 
-  /* On a sysret we're all done - restore everything and free self */
-  void demagic_and_deallocate(void* cpu, uint64_t pc);
+  /* On a sysret we're all done - restore everything */
+  void demagic(void* cpu, uint64_t pc);
 
   /* At a sysret instruction, set new_regs up to rerun the syscall at sc_pc */
   void at_sysret_redo_syscall(void* cpu, uint64_t sc_pc);
@@ -151,6 +151,22 @@ public:
 
   bool translate_gva(uint64_t gva, uint64_t* gpa);
   bool gpa_to_hva(uint64_t gpa, uint64_t* hva);
+
+  ExitStatus get_noreturn_result(void) {
+    if (!is_noreturn_) {
+      std::cerr << "Internal error: noreturn result requested without a noreturn syscall" << std::endl;
+      assert(0);
+    }
+    return noreturn_result_;
+  }
+
+  // User doesn't care about the return of the next yielded syscall, so 
+  // they set a result in advance of yielding it and we don't have to
+  // catch it on return.
+  void set_noreturn(ExitStatus e) {
+    noreturn_result_ = e;
+    is_noreturn_ = true;
+  }
 
   int magic_; // XXX DEBUGGING
   int ctr_; // XXX DEBUGGING
@@ -183,4 +199,7 @@ private:
               // How can we internally update this as we go?
 
   std::string name_; // Name (full path) of the hyde program
+
+  bool is_noreturn_; // Is the currently injected syscall no return?
+  ExitStatus noreturn_result_; // For a noreturn syscall, result must be set before it's yielded
 };

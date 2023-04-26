@@ -38,3 +38,7 @@ bool SyscallCtx::translate_gva(uint64_t gva, uint64_t* gpa) {
 bool SyscallCtx::gpa_to_hva(uint64_t gpa, uint64_t* hva) {
     return pImpl->gpa_to_hva(gpa, hva);
 }
+
+void SyscallCtx::set_noreturn(ExitStatus r) {
+    pImpl->set_noreturn(r);
+}

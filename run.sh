@@ -5,26 +5,27 @@ function finish {
 trap finish EXIT
 set -eux
 
-# WORKS?
-CAP=perf_eval
+# WORKS
+#CAP=perf_eval
 #CAP=envadder
 #CAP=no_root_socks
 #CAP=get_sysinfo
-#CAP=ps
+CAP=ps # Seems like it doesn't unload after, gets stuck on a slow syscall (poll with no timeout?)
 #CAP=test
 
 #WIP 
-#CAP=pwreset
-#CAP=launchssh # It did take a bit when the guest was idle though
+#CAP=is_paged_out
+#CAP=launchssh # Needs support for injecting through forks
 #CAP=is_paged_out
 #CAP=secretfile
 #CAP=readfile
 
-# BROKEN? Maybe fixed now
-#CAP=attest
+# BROKEN
+#CAP=pwreset
+#CAP=attest # Kinda works, kinda broken :(
 #CAP=sbom
-#CAP=2fa
-#CAP=2fa_net
+#CAP=2fa # Close to working
+#CAP=2fa_net # Close to working
 
 export N=1
 
@@ -41,9 +42,9 @@ QCOW=~/.panda/ubuntu-jammy.qcow
 HYDE_ENABLE="-hyde-enable $CAP"
 
 CORES="-smp 8,sockets=2,cores=4"
-#LOADVM=eightcore
+LOADVM=eightcore
 #LOADVM=eightcoreroot
-LOADVM=eightstrace
+#LOADVM=eightstrace
 
 #CORES=""
 #LOADVM="gdb2" # Singlecore

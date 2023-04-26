@@ -30,6 +30,9 @@ public:
     bool translate_gva(uint64_t gva, uint64_t* gpa);
     bool gpa_to_hva(uint64_t gpa, uint64_t *hva);
 
+    // Before yielding a noreturn syscall, specify an exit value
+    void set_noreturn(ExitStatus r);
+
     struct kvm_regs get_orig_regs() const; /* Get original regs*/
     // Other public methods for plugins to access SyscallCtx information
 

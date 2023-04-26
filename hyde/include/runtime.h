@@ -61,6 +61,9 @@ private:
 
   SyscallCtx* get_reinject_ctx(void* cpu, uint64_t pc, uint64_t rax, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15);
 
+  // A coopter/coroutine has finished with its injection, should we report a warning or unload the program because it's done?
+  void on_coopter_finish(SyscallCtx* target, ExitStatus result);
+
 
   void register_plugin_handlers(Plugin* plugin);
 

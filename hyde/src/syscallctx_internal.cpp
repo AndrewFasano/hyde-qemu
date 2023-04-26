@@ -42,7 +42,8 @@ SyscallCtx_impl::SyscallCtx_impl(void* cpu, SyscallCtx* ctx) :
   coopter_(nullptr),
   has_custom_retval_(false),
   has_custom_return_(false),
-  cpu_(cpu)
+  cpu_(cpu),
+  is_noreturn_(false)
 {
   // At initialization, we read original registers
   assert(cpu != nullptr);
@@ -131,8 +132,16 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
 
   // If this syscall will return *ONCE* we inject into R12-R15 and cleanup on return
   // Otherwise we just inject this syscall and can't get the results
-  bool set_magic = !IS_NORETURN_SC(sc.callno) && !IS_FORK_SC(sc.callno) && !IS_CLONE_SC(sc.callno);
-  if (set_magic) {
+
+  if (!is_noreturn_) {
+    // If this syscall is expected to return, we can add our magic values into registers
+    
+    if(IS_NORETURN_SC(sc.callno) || IS_FORK_SC(sc.callno) || IS_CLONE_SC(sc.callno)) {
+      std::cerr << "USER ERROR: Syscall " << sc.callno << " is yielded awaiting a return but it's a noreturn" << std::endl;
+      assert(0);
+      return false; // Don't expect a return, we won't even set user's args. This is fatal
+    }
+
     r.r12 = reinterpret_cast<uint64_t>(SyscallCtx_);
     //r.r13 = r.rip; // XXX on construct we moved rcx into our rip since that's what it is
     r.r13 = r.rcx;
@@ -141,10 +150,13 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
   }
 
   assert(set_regs(cpu, &r));
-  return set_magic;
+  return !is_noreturn_; // Return true IF we expect a return
+
+  // If we return fales, runtime.,cpp will call on_coopter_finish which
+  // will deallocate and destory the coopter
 }
 
-  void SyscallCtx_impl::demagic_and_deallocate(void* cpu, uint64_t pc) {
+  void SyscallCtx_impl::demagic(void* cpu, uint64_t pc) {
     // Restore R12, R13, R14, R15 from orig_regs - this is 
     // when we hit a syscall that we've set up from a sysret
     cpu_ = cpu;
@@ -153,6 +165,7 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
 
     // Do we need to keep rflags? I'm not sure if we can/should
     // With it unset perf_eval N=1 coreutils multicore passes
+    // Other tests also don't seem to change with this enabled
     //kvm_regs current_regs;
     //assert(get_regs(cpu, &current_regs));
     //new_regs.rflags = current_regs.rflags; // Keep changes to RFLAGS?
@@ -177,8 +190,6 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
       new_regs.rip = pc;
     }
     assert(set_regs(cpu, &new_regs));
-
-    delete this;
   }
 
 

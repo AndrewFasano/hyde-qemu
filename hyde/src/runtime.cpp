@@ -139,15 +139,10 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
   // Double return: Child won't start at SC so it would start executing with bad R12-R15 and we can't cleanup
   // We can fix the double return case by hacking up the child start addr, but we don't need to
   if (!target->pImpl->inject_syscall(cpu, promise.value_)) {
-    // Returns false if we can't track it (noreturn)
-    // In that case we need to cleanup now - note coopter will never advance here
-    // Kinda makes sense, if you yield exit, what would you expect?
-    
-    {
-      std::lock_guard<std::mutex> lock(coopted_procs_lock_);
-      coopted_procs_.erase(target);
-    }
-    delete target;
+    // Returns false for noreturn ssyscalls (i.e., exit)
+    // In that case no magic registers were set in the guest so we can
+    // just forget about this injection and be done now.
+    on_coopter_finish(target, target->pImpl->get_noreturn_result());
   }
 }
 
@@ -180,15 +175,19 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
   auto promise = target->pImpl->get_coopter_promise();
   ExitStatus result = promise.retval;
 
-  // Hold onto name so we can cleanup with it
-  std::string name = target->pImpl->get_name();
-
   // All done with injection. Restore original registers, free target
+  target->pImpl->demagic(cpu, pc);
+
+  on_coopter_finish(target, result);
+}
+
+void Runtime::on_coopter_finish(SyscallCtx* target, ExitStatus result) {
+  std::string name= target->pImpl->get_name(); // We'll use this after deleting
   {
     std::lock_guard<std::mutex> lock(coopted_procs_lock_);
     coopted_procs_.erase(target);
   }
-  target->pImpl->demagic_and_deallocate(cpu, pc);
+  delete target;
 
   // Based on result, update state for the whole hyde program
   switch (result) {

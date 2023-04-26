@@ -3090,7 +3090,7 @@ static void _kvm_disable_hyde_async(void *opaque) {
     CPUState *cpu;
     CPU_FOREACH(cpu) {
         if (kvm_vcpu_ioctl(cpu, KVM_HYDE_TOGGLE, enable) != 0) {
-            error_report("Failed to disable HyDE on CPU %d", cpu->cpu_index);
+            error_report("Failed to toggle HyDE to %d on CPU %d", enable, cpu->cpu_index);
         }
     }
     if (was_running) vm_start();

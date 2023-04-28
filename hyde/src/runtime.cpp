@@ -160,6 +160,7 @@ void Runtime::on_sysret(void* cpu, uint64_t pc, uint64_t retval, uint64_t r12, u
 
   // Provide retval and advance coroutine
   target->pImpl->set_last_rv(retval);
+  target->pImpl->set_cpu(cpu);
   target->pImpl->advance_coopter();
 
   // In the case of !done, we set orig_regs with R12-R15 modified

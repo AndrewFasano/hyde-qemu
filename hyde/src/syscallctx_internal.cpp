@@ -67,8 +67,6 @@ SyscallCtx_impl::SyscallCtx_impl(void* cpu, SyscallCtx* ctx) :
   //orig_regs_.rcx = 0x41424344;
   //orig_regs_.r11 = 0x61626364;
 
-  // And let's also hold nto the original 
-
   // Parse registers to get orig syscall info
   // Yep it's duplicative!
   orig_syscall_ = new hsyscall(__get_arg(orig_regs_, RegIndex::CALLNO));
@@ -85,24 +83,19 @@ SyscallCtx_impl::~SyscallCtx_impl() {
 }
 
 uint64_t SyscallCtx_impl::get_arg(int i) const {
-  //return __get_arg(orig_regs_, i); // RegIndex
-  return orig_syscall_->get_arg(i);
+  return orig_syscall_->get_arg(i); // Integer
 }
 
 uint64_t SyscallCtx_impl::get_arg_(RegIndex i) const {
   return __get_arg(orig_regs_, i); // RegIndex
 }
 
-void SyscallCtx_impl::set_nop(uint64_t retval) const {
+void SyscallCtx_impl::set_nop(uint64_t retval) {
   orig_syscall_->callno = SYS_getpid; // No side effects
-  orig_syscall_->set_retval(retval);
+  set_custom_retval(retval);
 }
 
 void SyscallCtx_impl::set_arg(int i, uint64_t val) const {
-  // XXX: Do we update orig_regs or do we update orig_syscall?
-  // Let's update orig_syscall
-  //__set_arg(orig_regs_, i, val);
-  //orig_syscall_->args[i].value = val; // With RegIndex
   return orig_syscall_->set_arg(i, val);
 }
 
@@ -110,14 +103,15 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
   cpu_ = cpu;
   kvm_regs r = orig_regs_;
 
-  // How do current registers compare to original?
+  if (is_noreturn_) {
+    //std::cout << "Injecting a noreturn syscall: " << sc.callno << std::endl;
+    kvm_regs r2;
+    assert(get_regs(cpu, &r2));
 
-// ORIG rcx, R11 are junk. Orig RCX is in RIP
-// ORIG rip is r2.rcx
+    // Seems like we *don't* want this
+    //r.rflags = r2.rflags; // Keep changes to RFLAGS?
+  }
 
-  //kvm_regs r2;
-  //assert(get_regs(cpu, &r2));
-  //pretty_print_diff_regs(r, r2);
 
   // TODO: we should support stack-based args too, but might need to inject to page in stack
   __set_arg(r, RegIndex::CALLNO, sc.callno);
@@ -133,9 +127,14 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
   // If this syscall will return *ONCE* we inject into R12-R15 and cleanup on return
   // Otherwise we just inject this syscall and can't get the results
 
+  if (is_noreturn_ && sc.has_retval) {
+    std::cerr << "USER ERROR: Syscall " << sc.callno << " is marked noreturn but has a custom retval - incompatable options" << std::endl;
+  }
+
+
   if (!is_noreturn_) {
     // If this syscall is expected to return, we can add our magic values into registers
-    
+
     if(IS_NORETURN_SC(sc.callno) || IS_FORK_SC(sc.callno) || IS_CLONE_SC(sc.callno)) {
       std::cerr << "USER ERROR: Syscall " << sc.callno << " is yielded awaiting a return but it's a noreturn" << std::endl;
       assert(0);
@@ -157,7 +156,7 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
 }
 
   void SyscallCtx_impl::demagic(void* cpu, uint64_t pc) {
-    // Restore R12, R13, R14, R15 from orig_regs - this is 
+    // Restore R12, R13, R14, R15 from orig_regs - this is
     // when we hit a syscall that we've set up from a sysret
     cpu_ = cpu;
     magic_ = -1;
@@ -166,18 +165,19 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
     // Do we need to keep rflags? I'm not sure if we can/should
     // With it unset perf_eval N=1 coreutils multicore passes
     // Other tests also don't seem to change with this enabled
-    //kvm_regs current_regs;
-    //assert(get_regs(cpu, &current_regs));
-    //new_regs.rflags = current_regs.rflags; // Keep changes to RFLAGS?
+    kvm_regs current_regs;
+    assert(get_regs(cpu, &current_regs));
+    new_regs.rflags = current_regs.rflags; // Keep changes to RFLAGS?
 
     if (!has_custom_retval()) [[likely]] {
       // Generally we set the retval to the result of the last syscall
       // (i.e., what's currently in RAX before we change registers)
-      kvm_regs current_regs;
-      assert(get_regs(cpu, &current_regs));
+      //kvm_regs current_regs;
+      //assert(get_regs(cpu, &current_regs));
       new_regs.rax = current_regs.rax; // We want the process to see the retval of the last syscall!
     } else {
       // But if a user wants, we can also set it to something custom
+      printf("SET CUSTOM RETVAL IN RAX: %lx\n", get_custom_retval());
       new_regs.rax = get_custom_retval();
     }
 
@@ -189,6 +189,7 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
       // In general we set the RIP to the PC arg which should be the insn after the syscall
       new_regs.rip = pc;
     }
+
     assert(set_regs(cpu, &new_regs));
   }
 
@@ -204,9 +205,9 @@ void SyscallCtx_impl::at_sysret_redo_syscall(void* cpu, uint64_t sc_pc) {
   new_regs.r14 = MAGIC_VALUE_REPEAT;
   new_regs.r15 = new_regs.r12 ^ new_regs.r13;
 
-  // And change our PC to sc_pc as well via RCX. This works, we used it previously:
-  // https://github.com/AndrewFasano/hhyde-qemu/blob/6b15778ff2e2f56e3b3311f2a4a3b608026e4ba5/accel/kvm/hyde.cpp#L539
+  // And change our PC to sc_pc by setting RIP directly
   new_regs.rip = sc_pc;
+
 
   assert(set_regs(cpu, &new_regs));
 }

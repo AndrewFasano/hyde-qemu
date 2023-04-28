@@ -69,7 +69,7 @@ public:
   hsyscall* get_orig_syscall() { return orig_syscall_;}
   
   // Set an arg in the original syscall */
-  void set_nop(uint64_t new_val) const;
+  void set_nop(uint64_t new_val);
 
   void set_coopter(create_coopter_t f) {
     coopter_ = (f)(SyscallCtx_).h_;
@@ -107,10 +107,16 @@ public:
   }
 
   void set_last_rv(uint64_t retval) {
+    // Is this redundant with hsyscall retval?
     last_sc_retval_ = retval;
   }
 
+  void set_cpu(void *cpu) {
+    cpu_ = cpu;
+  }
+
   uint64_t get_last_rv() {
+    // Is this redundant with hsyscall retval?
     return last_sc_retval_;
   }
 
@@ -125,7 +131,7 @@ public:
     be sure we catch it on cleanup */
  bool inject_syscall(void* cpu, hsyscall sc);
 
-  /* On a sysret we're all done - restore everything */
+  /* On a sysret we're all done - restore everything. Apply custom retval if present */
   void demagic(void* cpu, uint64_t pc);
 
   /* At a sysret instruction, set new_regs up to rerun the syscall at sc_pc */

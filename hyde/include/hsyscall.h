@@ -56,8 +56,21 @@ struct hsyscall {
     has_retval(false) {}
 
   void set_retval(uint64_t value) {
+    // I think this is unused? Maybe it goes back to users?
     has_retval = true;
     retval = value;
+  }
+
+  void dump(void) {
+    printf("hsyscall: nargs=%d: callno=%lu(", nargs, callno);
+    for (unsigned int i = 0; i < nargs; i++) {
+      if (args[i].is_ptr){
+        printf("[ptr guest=%lx, host=%lx], ", args[i].guest_ptr, args[i].value);
+      } else {
+        printf("val=%lx, ", args[i].value);
+      }
+    }
+    puts(")");
   }
 
   void set_args(unsigned int n, uint64_t* new_args) {

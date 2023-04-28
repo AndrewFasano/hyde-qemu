@@ -78,6 +78,10 @@ SyscallCtx_impl::SyscallCtx_impl(void* cpu, SyscallCtx* ctx) :
 }
 
 SyscallCtx_impl::~SyscallCtx_impl() {
+  if (SyscallCtx_->stack_ != 0) {
+    std::cerr << "USER ERROR: At coroutine destruction, stack still exists in guest memory - missing call to finish()" << std::endl;
+  }
+
   delete orig_syscall_;
   if (coopter_ != nullptr) coopter_.destroy();
 }

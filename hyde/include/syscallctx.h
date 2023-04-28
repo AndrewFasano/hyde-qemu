@@ -36,6 +36,9 @@ public:
     struct kvm_regs get_orig_regs() const; /* Get original regs*/
     // Other public methods for plugins to access SyscallCtx information
 
+    uint64_t stack_;
+    size_t stack_size_; // 0 if no stack
+
 private:
     friend class Runtime; // Give access to Runtime for constructing and managing SyscallCtx objects
 

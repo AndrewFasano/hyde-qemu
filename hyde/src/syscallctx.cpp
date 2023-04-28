@@ -7,7 +7,8 @@
 //}
 
 SyscallCtx::SyscallCtx(void* cpu)
-: pImpl(std::make_unique<SyscallCtx_impl>(cpu, this)) {}
+: stack_(0), stack_size_(0),
+  pImpl(std::make_unique<SyscallCtx_impl>(cpu, this)) {};
 
 SyscallCtx::~SyscallCtx() = default;
 

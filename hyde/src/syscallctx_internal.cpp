@@ -177,7 +177,6 @@ bool SyscallCtx_impl::inject_syscall(void* cpu, hsyscall sc) {
       new_regs.rax = current_regs.rax; // We want the process to see the retval of the last syscall!
     } else {
       // But if a user wants, we can also set it to something custom
-      printf("SET CUSTOM RETVAL IN RAX: %lx\n", get_custom_retval());
       new_regs.rax = get_custom_retval();
     }
 

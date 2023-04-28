@@ -2,6 +2,8 @@
 
 #include <coroutine>
 #include <functional>
+#include <stdexcept>
+
 #include "hsyscall.h"
 
 // HydeCoro is our tempalted coroutine we'll use for
@@ -25,7 +27,8 @@ struct HydeCoro {
     }
     std::suspend_never initial_suspend() { return {}; }
     std::suspend_always final_suspend() noexcept { return {}; }
-    void unhandled_exception() {}
+    void unhandled_exception() { std::terminate(); }
+
 
     // Regular yield, returns an hsyscall value
     std::suspend_always yield_value(T value) {

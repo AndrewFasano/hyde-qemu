@@ -33,6 +33,10 @@ hsyscall* SyscallCtx::get_orig_syscall() const {
   return pImpl->get_orig_syscall();
 }
 
+hsyscall SyscallCtx::pending_sc() const {
+  return *pImpl->get_orig_syscall();
+}
+
 bool SyscallCtx::translate_gva(uint64_t gva, uint64_t* gpa) {
     return pImpl->translate_gva(gva, gpa);
 }

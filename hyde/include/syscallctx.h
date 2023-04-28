@@ -15,7 +15,11 @@ class SyscallCtx {
 public:
     SyscallCtx(void* cpu);
 
-    hsyscall* get_orig_syscall() const; /* Get orig */
+    /* Get originally requested syscall */
+    hsyscall* get_orig_syscall() const;
+
+    /* Get the originally requested syscall */
+    hsyscall pending_sc() const;
 
     //uint64_t get_arg(RegIndex i) const; /* Get arg from orig */
     //void set_arg(RegIndex i, uint64_t val) const; /* Set arg in orig */

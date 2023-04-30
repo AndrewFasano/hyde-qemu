@@ -2,6 +2,8 @@
 #include <memory>
 #include "hsyscall.h"
 #include "syscall_coroutine.h"
+#include <mutex>
+#include <assert.h>
 
 enum class RegIndex;
 
@@ -38,10 +40,24 @@ public:
     void set_noreturn(ExitStatus r);
 
     struct kvm_regs get_orig_regs() const; /* Get original regs*/
-    // Other public methods for plugins to access SyscallCtx information
 
-    uint64_t stack_;
-    size_t stack_size_; // 0 if no stack
+    /* set stack gva and size */
+    void set_stack(uint64_t addr, size_t size);
+
+    /* Return stack gva, stack_size */
+    std::pair<uint64_t, size_t> get_stack(void);
+
+    // Called by the runtime to clear the guest stack
+    // This shoudl be called, then an munmap syscall run
+    void clear_stack(void);
+
+    /* Can the stack fit the provided size? False if
+    * stack is unallocated or smaller than provided. */
+    bool stack_can_fit(size_t requested_size);
+
+    /* Does this context have a set stack? */
+    bool has_stack(void);
+
 
 private:
     friend class Runtime; // Give access to Runtime for constructing and managing SyscallCtx objects
@@ -49,6 +65,10 @@ private:
 
     SyscallCtx();
     ~SyscallCtx();
+
+    std::mutex stack_mtx_;
+    uint64_t stack_;
+    size_t stack_size_; // 0 if no stack
 
     // Unique pointer to the implementation
     std::unique_ptr<SyscallCtx_impl> pImpl;

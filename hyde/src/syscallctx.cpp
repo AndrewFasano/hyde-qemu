@@ -2,9 +2,6 @@
 #include "hyde/src/syscallctx_internal.h"
 
 // Nobody can initialize this class, it's only created via the pImpl
-//SyscallCtx::SyscallCtx()
-//    : pImpl(std::make_unique<SyscallCtx_impl>(nullptr)) {
-//}
 
 SyscallCtx::SyscallCtx(void* cpu)
 : stack_(0), stack_size_(0),
@@ -46,4 +43,46 @@ bool SyscallCtx::gpa_to_hva(uint64_t gpa, uint64_t* hva) {
 
 void SyscallCtx::set_noreturn(ExitStatus r) {
     pImpl->set_noreturn(r);
+}
+
+// The stack functions all use a mutex, not because we think
+// we could possibly need it, but becasue if we ever managed
+// to have two coroutines with the same context we'd want to fail fast
+
+void SyscallCtx::set_stack(uint64_t addr, uint64_t size) {
+    std::lock_guard<std::mutex> lock(stack_mtx_);
+    //printf("Set stack for %p to %lx size %ld\n", this, addr, size);
+    assert(stack_size_ == 0 && "Stack already set");
+    stack_size_ = size;
+    stack_ = addr;
+}
+
+std::pair<uint64_t, size_t> SyscallCtx::get_stack(void) {
+    std::lock_guard<std::mutex> lock(stack_mtx_);
+    assert(stack_size_ != 0 && "Stack not set");
+    //printf("Get stack for %p: %lx size %ld\n", this, stack_, stack_size_);
+    return std::make_pair(stack_, stack_size_);
+}
+
+// Called by the runtime to clear the guest stack
+// This shoudl be called, then an munmap syscall run
+void SyscallCtx::clear_stack(void) {
+    std::lock_guard<std::mutex> lock(stack_mtx_);
+    assert(stack_size_ != 0 && "Stack not set");
+    //printf("Clear stack for %p. Had %lx, size %ld\n", this, stack_, stack_size_);
+    stack_size_ = 0;
+    stack_ = 0;
+}
+
+/* Can the stack fit the provided size? False if
+  * stack is unallocated or smaller than provided. */
+bool SyscallCtx::stack_can_fit(size_t requested_size) {
+    std::lock_guard<std::mutex> lock(stack_mtx_);
+    //printf("Can stack stack for %p which is sz %ld fit %ld?", this, stack_size_, requested_size);
+    return stack_size_ >= requested_size;
+}
+
+bool SyscallCtx::has_stack(void) {
+    std::lock_guard<std::mutex> lock(stack_mtx_);
+    return stack_size_ != 0;
 }

@@ -3,31 +3,27 @@ function finish {
   stty sane
 }
 trap finish EXIT
-set -eux
 
-# WORKS
+set -eu
+
+# All work for Ubuntu 22.04 + 18.04
 #CAP=perf_eval
 #CAP=envadder
 #CAP=no_root_socks
 #CAP=get_sysinfo
-CAP=ps # Seems like it doesn't unload after, gets stuck on a slow syscall (poll with no timeout?)
-#CAP=test
+#CAP=ps
+#CAP=file_access_log
+#CAP=secretfile
+#CAP=2fa      # Some issues on 18.04, might also be present on 22.04
+#CAP=2fa_net
+#CAP=pwreset
+#CAP=sbom
+#CAP=attest # Not yet tested on 18.04
 
 #WIP 
-#CAP=is_paged_out
 #CAP=launchssh # Needs support for injecting through forks
-#CAP=is_paged_out
-#CAP=secretfile
-#CAP=readfile
 
-# BROKEN
-#CAP=pwreset
-#CAP=attest # Kinda works, kinda broken :(
-#CAP=sbom
-#CAP=2fa # Close to working
-#CAP=2fa_net # Close to working
-
-export N=1
+export N=5
 
 # Rebuild qemu every time
 make -C build -j$(nproc)
@@ -36,23 +32,30 @@ make -C build -j$(nproc)
 make -C ../cap_libs progs/${CAP}.so
 CAP="${HOME}/hhyde/cap_libs/progs/${CAP}.so"
 
-QCOW=~/.panda/ubuntu-jammy.qcow
-#QCOW=~/.panda/bionic-server-cloudimg-amd64-noaslr-nokaslr.qcow2
+#QCOW=~/.panda/ubuntu-jammy.qcow
+QCOW=~/.panda/bionic-server-cloudimg-amd64-noaslr-nokaslr.qcow2
+#QCOW=~/hhyde/qcows/FreeBSD-12.1-RELEASE-amd64.qcow2
 
 HYDE_ENABLE="-hyde-enable $CAP"
+#HYDE_ENABLE=""
 
 CORES="-smp 8,sockets=2,cores=4"
-LOADVM=eightcore
-#LOADVM=eightcoreroot
+#LOADVM=eightcore # This is like 521-522 passing
+LOADVM=eightcoreroot # jammy and bionic and bsd - Maybe goal is 489 tests pass 152 skip
 #LOADVM=eightstrace
 
 #CORES=""
-#LOADVM="gdb2" # Singlecore
+#LOADVM="gdb2" # Singlecore - jammy
 
-#VALGRIND=valgrind -- log-file=log.txt --track-origins=yes --error-limit=no
+LOAD="-loadvm ${LOADVM}"
+#LOAD=""
+
+#VALGRIND="valgrind --log-file=log.txt --track-origins=yes --error-limit=no"
 VALGRIND=""
 
 #GDB="gdb --args"
 GDB=""
 
-${VALGRIND} ${GDB} ./build/qemu-system-x86_64 -m 1G -accel kvm ${CORES} "${QCOW}" -nographic -loadvm $LOADVM ${HYDE_ENABLE}
+echo -e "\n\nRUNNING ${VALGRIND} ${GDB}\n\t${QCOW} ${CORES} ${LOADVM}:\n\t${HYDE_ENABLE}\n\n"
+
+${VALGRIND} ${GDB} ./build/qemu-system-x86_64 -m 1G -accel kvm ${CORES} "${QCOW}" -nographic ${LOAD} ${HYDE_ENABLE}

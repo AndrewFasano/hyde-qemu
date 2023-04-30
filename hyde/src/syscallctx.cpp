@@ -42,6 +42,10 @@ bool SyscallCtx::gpa_to_hva(uint64_t gpa, uint64_t* hva) {
 }
 
 void SyscallCtx::set_noreturn(ExitStatus r) {
+    if (pImpl->has_custom_retval() || pImpl->has_custom_return()) [[unlikely]] {
+      printf("USER ERROR: You can't set a custom retval or ret addr in a noreturn syscall\n");
+      assert(0);
+    }
     pImpl->set_noreturn(r);
 }
 

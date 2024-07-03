@@ -8,18 +8,6 @@ HXCOMM HXCOMM can be used for comments, discarded from both rST and C.
 
 
     {
-        .name       = "begin_record",
-        .args_type  = "file_name:s",
-        .params     = "[file_name]",
-        .help       = "begin recording for later replay",
-        .cmd = hmp_begin_record,
-    },
-
-SRST
-``begin_record [name]``
-  Start recording system execution, save to a snapshot named *name*
-ERST
-    {
         .name       = "help|?",
         .args_type  = "name:S?",
         .params     = "[cmd]",

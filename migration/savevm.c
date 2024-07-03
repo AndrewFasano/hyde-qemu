@@ -1578,44 +1578,6 @@ void qemu_savevm_live_state(QEMUFile *f)
     qemu_put_byte(f, QEMU_VM_EOF);
 }
 
-int save_mem_snapshot(const char* filename) {
-    return 0;
-#if 0
-    Error **errp = NULL;
-    QIOChannelFile *ioc;
-    QEMUFile *f;
-    char* snp_name = (char*)malloc(strlen(filename)+8);
-    snprintf(snp_name, strlen(filename)+5, "%s-rr-snp", filename);
-
-    global_state_store_running();
-
-    ioc = qio_channel_file_new_path(snp_name, O_WRONLY | O_CREAT | O_TRUNC, 0660, errp);
-    if (!ioc) {
-      printf("ERROR failed to create file %s\n", snp_name);
-      free(snp_name);
-      return 1;
-    }
-
-    // Create channel
-    qio_channel_set_name(QIO_CHANNEL(ioc), "panda-save-state");
-
-    // TODO, needs Q7 update
-    bs = bdrv_all_find_vmstate_bs(vmstate, has_devices, devices, errp);
-    if (bs == NULL) {
-        return false;
-    }
-
-    f = qemu_fopen_bdrv(bs, 1);
-    qemu_savevm_state(f, errp);
-
-    //qemu_fflush(f);
-    qemu_fclose(f);
-    int ret = qemu_file_get_error(f);
-    free(snp_name);
-    return ret;
-#endif
-}
-
 int qemu_save_device_state(QEMUFile *f)
 {
     SaveStateEntry *se;

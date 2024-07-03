@@ -49,7 +49,6 @@
 
 #include "hw/boards.h"
 #include "monitor/stats.h"
-
 #include "hyde/include/qemu_api.h"
 
 /* This check must be after config-host.h is included */
@@ -2215,6 +2214,7 @@ void kvm_irqchip_set_qemuirq_gsi(KVMState *s, qemu_irq irq, int gsi)
 static void kvm_irqchip_create(KVMState *s)
 {
     int ret;
+
     assert(s->kernel_irqchip_split != ON_OFF_AUTO_AUTO);
     if (kvm_check_extension(s, KVM_CAP_IRQCHIP)) {
         ;

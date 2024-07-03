@@ -56,9 +56,6 @@ private:
 
   void register_plugin_handlers(Plugin* plugin);
 
-  // TODO: delete this one
-  //std::map<std::string, coopter_f*> coopters; // filename -> should_coopt function
-
   // Plugins populate these in their init methods
   std::unordered_map<int, create_coopter_t> syscall_handlers_;
 
@@ -71,9 +68,6 @@ private:
 
   std::set<std::string> pending_exits_ = {}; // Procs that have been coopted
   std::mutex pending_exits_lock_;
-
-  //std::set<SyscallCtx*> double_return_parents_ = {};
-  //std::set<SyscallCtx*> double_return_children_ = {};
 
   using PluginInitFn = bool (*)(std::unordered_map<int, create_coopter_t>&);
 };

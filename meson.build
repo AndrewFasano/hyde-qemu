@@ -3133,8 +3133,7 @@ subdir('replay')
 subdir('semihosting')
 subdir('tcg')
 subdir('fpu')
-
-subdir('hyde') # Before accel?
+subdir('hyde')
 subdir('accel')
 subdir('plugins')
 subdir('ebpf')
@@ -3521,7 +3520,6 @@ foreach target : target_dirs
                link_language: link_language,
                link_depends: [block_syms, qemu_syms] + exe.get('link_depends', []),
                link_args: link_args,
-               #link_with: [runtime],
                win_subsystem: exe['win_subsystem'])
 
     if targetos == 'darwin'

@@ -4,7 +4,6 @@ QEMU_PATH=../build/qemu-system-x86_64
 QEMU_IMG_PATH=~/jammy.qcow
 LOADVM=lmbench2
 
-# Doesn't matter for now
 export N=1000
 CAP=perf_eval
 CAP="${HOME}/hhyde/cap_libs/progs/${CAP}.so"

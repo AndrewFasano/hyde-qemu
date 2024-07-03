@@ -59,7 +59,6 @@
 #include "sysemu/sysemu.h"
 #include "sysemu/tpm.h"
 #include "trace.h"
-#include "hyde/include/qemu_api.h"
 
 static NotifierList exit_notifiers =
     NOTIFIER_LIST_INITIALIZER(exit_notifiers);
@@ -619,7 +618,7 @@ void qemu_system_killed(int signal, pid_t pid)
     shutdown_pid = pid;
     shutdown_action = SHUTDOWN_ACTION_POWEROFF;
 
-    /* Cannot call qemu_system_shutdown_requestt directly because
+    /* Cannot call qemu_system_shutdown_request directly because
      * we are in a signal handler.
      */
     shutdown_requested = SHUTDOWN_CAUSE_HOST_SIGNAL;

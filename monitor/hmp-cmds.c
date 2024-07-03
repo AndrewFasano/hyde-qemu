@@ -99,13 +99,6 @@ static strList *strList_from_comma_list(const char *in)
     return res;
 }
 
-void hmp_begin_record(Monitor *mon, const QDict *qdict)
-{
-    const char* file_name = qdict_get_try_str(qdict, "file_name");
-    monitor_printf(mon, "Starting recording. Writing snapshot to to %s-rr-snp\n", file_name);
-    save_mem_snapshot(file_name);
-}
-
 void hmp_info_name(Monitor *mon, const QDict *qdict)
 {
     NameInfo *info;

@@ -64,16 +64,6 @@ void Runtime::on_syscall(void* cpu, uint64_t next_pc, uint64_t rax, uint64_t r12
 
   // We universally ignore this to ensure signal handlers can be ended
   if (callno == SYS_rt_sigreturn) [[unlikely]] return;
-
-
-#if 0
-  if (callno == SYS_clone || callno == SYS_clone3 ||
-      callno == SYS_fork || callno == SYS_vfork) ||
-      callno == SYS_exit || callno == SYS_exit_group ||
-      callno == SYS_execve || callno == SYS_execveat ||
-  }
-  #endif
-
   uint64_t pc = next_pc-2;
 
   // If we've already coopted this process, get a handle to our target state

@@ -12,18 +12,7 @@
 #include <mutex>
 
 #define R14_INJECTED 0xdeadbeef
-
-#if 0
-int getregs(SyscallCtx*, struct kvm_regs *);
-int getregs(void*, struct kvm_regs *);
-int setregs(SyscallCtx*, struct kvm_regs *);
-int setregs(void*, struct kvm_regs *);
-void set_regs_to_syscall(SyscallCtx* details, void *cpu, hsyscall *sysc, struct kvm_regs *orig);
-#define PRINT_REG(REG) std::cout << "  " << #REG << ": " << std::hex << std::setw(16) << std::setfill('0') << regs.REG << std::endl;
-#endif
-
 #define SKIP_SYSNO __NR_getpid
-
 
 class Plugin;
 class SyscallCtx;

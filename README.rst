@@ -1,4 +1,40 @@
-===========
+HYDE QEMU
+=========
+
+HyDE (Hypervisor Dissociative Execution) is an innovative, modified virtualization environment that empowers the host system to inject system calls into a guest virtual machine, enabling advanced control and monitoring of guest behavior. This repository contains a customized version of QEMU 7.2.2 that has been modified to work with the HyDE virtualization environment.
+
+Repositories
+------------
+
+- `HyDE Core <https://github.com/AndrewFasano/hyde>`_: HyDE SDK, examples, and documentation.
+- `HyDE KVM <https://github.com/AndrewFasano/hyde-kvm>`_: Customized Linux KVM logic for HyDE.
+- `HyDE QEMU <https://github.com/AndrewFasano/hyde-qemu>`_: Customized QEMU for HyDE.
+
+License
+-------
+
+As described in the LICENSE file, this repository is licensed under the GNU General Public License version 2.
+
+Citation
+--------
+
+To cite our work, please use the following BibTeX entry:
+
+.. code-block:: bibtex
+
+   @inproceedings{fasano2024hypervisor,
+     title={Hypervisor Dissociative Execution: Programming Guests for Monitoring, Management, and Security},
+     author={Fasano, Andrew and Estrada, Zak and Leek, Tim and Robertson, William},
+     booktitle={Proceedings of the Annual Computer Security Applications Conference},
+     series={ACSAC '24},
+     year={2024},
+     month={Dec},
+     address={Waikiki, Hawaii, USA},
+     publisher={Association for Computing Machinery},
+     location={Waikiki, Hawaii, USA},
+     dates={9-13}
+   }
+
 QEMU README
 ===========
 
